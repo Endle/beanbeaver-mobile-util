@@ -276,12 +276,12 @@ dependencies = [
 
 [[package]]
 name = "bb-receipt-ffi"
-version = "0.8.4"
-source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.8.4#feaf0e4df39bb4ed0d2858630d1392052167d09f"
+version = "0.9.0"
+source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.9.0#82c266d61c66d8f9b4eb62719bd36a72e857ce3f"
 dependencies = [
  "image",
- "ocr-paddle",
  "receipt-core",
+ "scan",
  "sha2",
  "uniffi",
 ]
@@ -1393,14 +1393,13 @@ dependencies = [
 
 [[package]]
 name = "ocr-paddle"
-version = "0.8.4"
-source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.8.4#feaf0e4df39bb4ed0d2858630d1392052167d09f"
+version = "0.9.0"
+source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.9.0#82c266d61c66d8f9b4eb62719bd36a72e857ce3f"
 dependencies = [
  "geo",
  "image",
  "imageproc",
  "ort",
- "receipt-core",
  "receipt-image",
 ]
 
@@ -1829,8 +1828,8 @@ checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
 
 [[package]]
 name = "receipt-core"
-version = "0.8.4"
-source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.8.4#feaf0e4df39bb4ed0d2858630d1392052167d09f"
+version = "0.9.0"
+source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.9.0#82c266d61c66d8f9b4eb62719bd36a72e857ce3f"
 dependencies = [
  "regex",
  "serde",
@@ -1839,8 +1838,8 @@ dependencies = [
 
 [[package]]
 name = "receipt-image"
-version = "0.8.4"
-source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.8.4#feaf0e4df39bb4ed0d2858630d1392052167d09f"
+version = "0.9.0"
+source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.9.0#82c266d61c66d8f9b4eb62719bd36a72e857ce3f"
 dependencies = [
  "image",
  "thiserror 2.0.20",
@@ -1933,6 +1932,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "scan"
+version = "0.9.0"
+source = "git+https://github.com/Endle/beanbeaver-core?tag=v0.9.0#82c266d61c66d8f9b4eb62719bd36a72e857ce3f"
+dependencies = [
+ "image",
+ "ocr-paddle",
+ "receipt-core",
 ]
 
 [[package]]
