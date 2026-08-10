@@ -29,8 +29,40 @@ phone apps.
   one place a false abstraction would cost real debugging time — see the iOS CI
   ORT-cache coupling incident (ios #57).
 
-The full rationale, including the rejected alternatives, is
-`~/src/bb/beanbeaver_mobile_util_plan.md`.
+### Why a separate repo, and what was rejected
+
+The planning doc this repo grew out of has been deleted now that the work is
+done, so the decisions worth not relitigating live here:
+
+- **Swift and Kotlin share nothing at source level.** Every "can we share this?"
+  answer therefore routes through Rust behind the UniFFI seam both apps already
+  consume, or it is a no. "Put it in a shared Swift/Kotlin file" is not an
+  option that exists, and that framing is the part people re-derive each time.
+- **A sibling crate inside `beanbeaver-core` was considered and rejected.** It
+  would be cheaper at release time — no extra pinning hop — but it widens what
+  core is for, against the standing charter that core is *solely* bbox →
+  itemized JSON. A separate repo keeps that charter literal. The price is one
+  more hop in every release, accepted knowingly.
+- **Never pass a whole receipt record across the FFI.** The app-side record
+  carries the full parse result including `rawText` and `beancount`, and both
+  apps recompute the summary on every render, so that would copy every OCR dump
+  per frame. `SpendInput` is a deliberately slim projection; mapping into it is
+  about ten lines per platform, and it insulates the spend layer from changes to
+  the parse result's shape.
+- **Not shared, deliberately:** UI; `WarningSeverity` (the parser reports a
+  `kind` and each client ranks it — a single shared severity would undo the
+  point); `GitHubLedger` (the *policy* is shared but the transport isn't, and
+  async HTTP over UniFFI means callback interfaces); and standalone display
+  formatters (an FFI hop per formatted price is ceremony for no gain —
+  `price_value` and `leaf_label` are here only because the arithmetic needs
+  them).
+
+**One thing was never finished:** whether the `SpendInput` projection is cheap
+enough to rebuild per render, or whether each app should memoise the summary on
+its record list's identity (Android `remember(records, monthId)`, iOS the
+store's revision). Both apps currently rebuild and cross the FFI every render —
+inherited behaviour, not a regression, but unmeasured. Measure from the app
+side, not host Rust, which skips the real serialization.
 
 ## Layout
 
