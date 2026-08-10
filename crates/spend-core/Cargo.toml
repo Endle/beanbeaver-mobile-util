@@ -1,0 +1,15 @@
+[package]
+name = "spend-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# No dependencies, and that is a design constraint rather than an accident — see
+# the crate docs. Pure arithmetic over plain data: no clock, no timezone
+# database, no UniFFI, no platform. `cargo test` runs it anywhere.
+[dependencies]

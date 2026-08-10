@@ -11,11 +11,13 @@ a git submodule at `shared/`.
 | `scripts/fetch-models.sh` | Downloads the three PP-OCRv5 ONNX weights from `beanbeaver-core`'s `ocr-models-v1` release. |
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device batch runner: scans a directory of JPEGs through the real core and writes `batch_out.json`. |
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point, run by each app's build script to emit Swift / Kotlin glue. |
+| `crates/spend-core/` | The spend/budget arithmetic both apps' spending screens are built on: month bucketing, category grouping, the drill-down. Zero dependencies. |
 
-Nothing here builds on its own — the two `.rs` files are source assets compiled
-inside each app's own cargo package, so they build against whatever
-`bb-receipt-ffi` tag that app pins. See `CLAUDE.md` for why, and for the charter
-of what may and may not live here.
+`crates/` is an ordinary cargo workspace — `cargo test` runs here. The two
+`src/bin/*.rs` files are **not** part of it: they are source assets compiled
+inside each app's own package, so they build against whatever `bb-receipt-ffi`
+tag that app pins. See `CLAUDE.md` for why, and for the charter of what may and
+may not live here.
 
 ## Use it
 
