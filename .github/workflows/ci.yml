@@ -88,6 +88,14 @@ jobs:
       - name: Test
         run: cargo test -p bb-mobile-ffi
 
+      # Explicit, and not redundant with the steps above: `cargo test` and
+      # `cargo clippy` build the rlib the test harness links, not the cdylib.
+      # Only `cargo build` emits libbb_mobile_ffi.so, and the cdylib is the whole
+      # subject of the next step — bindgen introspects it, and it is the artifact
+      # dead-code elimination actually strikes.
+      - name: Build the cdylib
+        run: cargo build -p bb-mobile-ffi
+
       # THE assertion this job exists for.
       #
       # bb-mobile-ffi depends on bb-receipt-ffi solely so that crate's uniffi
