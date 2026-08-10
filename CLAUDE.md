@@ -41,6 +41,7 @@ The full rationale, including the rejected alternatives, is
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point (library mode) | Compiled *into* each app's build-only crate via `[[bin]] path = "shared/src/bin/…"`. |
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device `BatchRunner` | Same. Produces the `batch_out.json` that `compare-e2e.py` grades. |
 | `crates/spend-core/` | **Phase 2a.** The spend/budget arithmetic — a real cargo crate, unlike the two bins above. Zero dependencies, `cargo test` anywhere. |
+| `crates/mobile-ffi/` | **Phase 2b.** The UniFFI seam over `spend-core`, and **the single library both apps link** — it carries two namespaces. See below. |
 
 **`models/` is deliberately not here.** The weights are large binaries and the
 current arrangement works: iOS commits them, Android fetches them from the
@@ -77,9 +78,8 @@ output means no change is needed.
 
 ### The crates, which *are* a workspace
 
-`crates/spend-core` (Phase 2a, landed) and `crates/mobile-ffi` (Phase 2b, not
-written) are ordinary workspace members, built by `cargo test` / `cargo build`
-here. The distinction matters: a change to `spend-core` is proven in this repo,
+`crates/spend-core` and `crates/mobile-ffi` are ordinary workspace members,
+built by `cargo test` / `cargo build` here. The distinction matters: a change to `spend-core` is proven in this repo,
 while a change to `src/bin/*.rs` can only be proven in an app.
 
 This makes the repo root a **workspace root nested inside each app's package
@@ -87,6 +87,44 @@ directory** (`beanbeaver-android/shared/Cargo.toml`). That is fine — cargo doe
 not scan subdirectories for packages, so the app's build never sees it.
 *Verified*, not assumed: `cargo check` on android's two bins with this workspace
 present in `shared/` is unaffected. Re-check it if the layout changes.
+
+## `mobile-ffi` carries two namespaces, and two things keep it that way
+
+`bb-mobile-ffi` depends on `bb-receipt-ffi` **solely so that crate's uniffi
+scaffolding lands in the same artifact**. Nothing here calls it. The result is
+one `libbb_mobile_ffi.{so,a,dylib}` exposing both `bb_mobile_ffi` and
+`bb_receipt_ffi`, so each app pins only this repo and runs one codegen step.
+
+Both of the following were established by measurement. Both fail *silently*.
+
+**1. `use bb_receipt_ffi as _;` in `crates/mobile-ffi/src/lib.rs` is load-bearing.**
+An unreferenced dependency is not linked into a `cdylib`, and uniffi's
+scaffolding is `#[no_mangle]` statics with nothing referencing them. Delete that
+line and everything still builds and every Rust test still passes — the library
+just drops from **~59 MB to ~1.7 MB** and bindgen emits **one** namespace, with
+no error anywhere. The first symptom is a missing-symbol failure in an app.
+CI asserts both namespaces, and that assertion has been checked against the
+actual regression, not just written.
+
+**2. Every type in `mobile-ffi` is prefixed `Spend`.** In Swift both namespaces
+are generated into one module, so a type name shared with `bb-receipt-ffi` is a
+redeclaration error. Core exports `ItemTag`, `ReceiptItem`, `Phase`,
+`ScanTimings` and ~20 more, and nothing starting `Spend`. An unprefixed type
+here breaks the **iOS** build and only the iOS build — Kotlin puts each
+namespace in its own package and would not notice.
+
+No `uniffi.toml` and no `cdylib_name`: in `--library` mode uniffi stamps the
+scanned artifact's name into every namespace it emits, so both generated loaders
+already resolve `bb_mobile_ffi`.
+
+### Generating bindings here
+
+```bash
+cargo build
+cargo run --bin uniffi-bindgen -- generate \
+  --library target/debug/libbb_mobile_ffi.dylib \
+  --language kotlin --out-dir gen        # or --language swift
+```
 
 ## Working on this repo
 
