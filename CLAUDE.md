@@ -40,14 +40,16 @@ The full rationale, including the rejected alternatives, is
 | `scripts/fetch-models.sh` | Downloads the 3 PP-OCRv5 ONNX weights | Writes to `$MODELS_DIR`, default `$PWD/models` — i.e. the **consuming repo's** root, not this submodule. |
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point (library mode) | Compiled *into* each app's build-only crate via `[[bin]] path = "shared/src/bin/…"`. |
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device `BatchRunner` | Same. Produces the `batch_out.json` that `compare-e2e.py` grades. |
+| `crates/spend-core/` | **Phase 2a.** The spend/budget arithmetic — a real cargo crate, unlike the two bins above. Zero dependencies, `cargo test` anywhere. |
 
 **`models/` is deliberately not here.** The weights are large binaries and the
 current arrangement works: iOS commits them, Android fetches them from the
 `ocr-models-v1` release on `beanbeaver-core`.
 
-## The Rust bins are source assets, not a crate
+## Two kinds of Rust live here, and they are built differently
 
-There is **no `Cargo.toml` in this repo** (Phase 1). `src/bin/*.rs` are compiled
+There is a cargo workspace at the root (`crates/`), but **`src/bin/*.rs` is not
+part of it** — nothing in this repo builds those two files. They are compiled
 inside each consuming app's own package, via explicit `[[bin]]` entries:
 
 ```toml
@@ -73,15 +75,29 @@ here**, and each app picks it up by moving its submodule pointer. Check with
 `git -C ../beanbeaver-core diff <from> <to> -- crates/ffi/src/lib.rs`; empty
 output means no change is needed.
 
-Phase 2 adds a real `Cargo.toml` workspace here (`crates/spend-core`,
-`crates/mobile-ffi`). At that point the apps' root `Cargo.toml` files stay
-packages and this becomes a workspace root *inside* their directory tree —
-fine for cargo, since it does not scan subdirectories for packages, but check it.
+### The crates, which *are* a workspace
+
+`crates/spend-core` (Phase 2a, landed) and `crates/mobile-ffi` (Phase 2b, not
+written) are ordinary workspace members, built by `cargo test` / `cargo build`
+here. The distinction matters: a change to `spend-core` is proven in this repo,
+while a change to `src/bin/*.rs` can only be proven in an app.
+
+This makes the repo root a **workspace root nested inside each app's package
+directory** (`beanbeaver-android/shared/Cargo.toml`). That is fine — cargo does
+not scan subdirectories for packages, so the app's build never sees it.
+*Verified*, not assumed: `cargo check` on android's two bins with this workspace
+present in `shared/` is unaffected. Re-check it if the layout changes.
 
 ## Working on this repo
 
-A change here is not done until **both** apps build against it. There is no CI in
-this repo — nothing here compiles on its own — so the apps are the test:
+`crates/` is testable here and must stay green:
+
+```bash
+cargo test && cargo clippy --all-targets && cargo fmt --check
+```
+
+A change to `src/bin/*.rs` is a different matter — nothing here compiles those,
+so it is not done until **both** apps build against it:
 
 ```bash
 # in beanbeaver-android

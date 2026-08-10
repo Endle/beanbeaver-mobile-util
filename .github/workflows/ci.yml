@@ -1,0 +1,63 @@
+name: CI
+
+# Only `crates/` is testable here. `src/bin/*.rs` is deliberately not a cargo
+# target in this repo — those two files are compiled inside each consuming app's
+# package against that app's pinned bb-receipt-ffi tag, so the apps' own CI is
+# the only place they can be built. See CLAUDE.md.
+#
+# spend-core has zero dependencies and no clock, so this is seconds and needs no
+# cache, no models, and no platform SDK.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  crates:
+    name: cargo test + clippy + fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # -D warnings: the workspace lints already set `unsafe_code = "forbid"` and
+      # `clippy::all = "warn"`, and a warning nobody fails on is a warning nobody
+      # reads.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all-features
+
+  # The shell and Python assets are the other half of this repo and nothing else
+  # would ever compile them. Cheap syntax gates, not a test suite.
+  scripts:
+    name: shellcheck + py_compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/*.py
