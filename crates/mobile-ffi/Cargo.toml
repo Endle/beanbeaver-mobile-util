@@ -1,0 +1,36 @@
+[package]
+name = "bb-mobile-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# The single library both apps link. `staticlib` is what the iOS xcframework
+# folds in; `cdylib` is what Android packages as libbb_mobile_ffi.so AND what
+# uniffi-bindgen introspects in --library mode; `lib` keeps it usable from Rust.
+#
+# One artifact carries BOTH uniffi namespaces (bb_mobile_ffi and
+# bb_receipt_ffi), so each app pins only this repo and runs one codegen step.
+[lib]
+name = "bb_mobile_ffi"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+# For generating bindings from this repo (the apps host their own copy of this
+# same bin at shared/src/bin/uniffi-bindgen.rs).
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+spend-core = { path = "../spend-core" }
+# Depended on so its scaffolding lands in this library — see the `use ... as _`
+# in lib.rs. Nothing here calls it. Keep this tag in step with what the apps
+# expect; a breaking FFI change here is a breaking change for both of them.
+bb-receipt-ffi = { git = "https://github.com/Endle/beanbeaver-core", tag = "v0.8.4" }
+# `cli` provides uniffi_bindgen_main() for the bin above. Must match the uniffi
+# that bb-receipt-ffi pulls in (0.28).
+uniffi = { version = "0.28", features = ["cli"] }

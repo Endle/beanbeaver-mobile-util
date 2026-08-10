@@ -2,7 +2,7 @@
 # cargo targets — they are source assets compiled inside each consuming app's own
 # package (see CLAUDE.md), so nothing here references them.
 [workspace]
-members = ["crates/spend-core"]
+members = ["crates/spend-core", "crates/mobile-ffi"]
 resolver = "2"
 
 [workspace.package]

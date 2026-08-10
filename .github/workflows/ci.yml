@@ -1,12 +1,18 @@
 name: CI
 
-# Only `crates/` is testable here. `src/bin/*.rs` is deliberately not a cargo
-# target in this repo — those two files are compiled inside each consuming app's
-# package against that app's pinned bb-receipt-ffi tag, so the apps' own CI is
-# the only place they can be built. See CLAUDE.md.
+# Three jobs, split by how much they cost.
 #
-# spend-core has zero dependencies and no clock, so this is seconds and needs no
-# cache, no models, and no platform SDK.
+# `crates` is spend-core alone: zero dependencies, so it needs no cache and
+# finishes in seconds. Keeping it separate means a typo there fails fast instead
+# of queueing behind an ONNX Runtime download.
+#
+# `ffi` builds bb-mobile-ffi, which pulls in bb-receipt-ffi and therefore
+# ocr-paddle and `ort`. It is the slow one, and it exists to assert the thing
+# that silently breaks — see "both namespaces" below.
+#
+# `src/bin/*.rs` is deliberately not a cargo target in this repo: those two files
+# are compiled inside each consuming app's package against that app's pinned
+# bb-receipt-ffi tag, so the apps' own CI is the only place they can be built.
 
 on:
   push:
@@ -23,7 +29,7 @@ permissions:
 
 jobs:
   crates:
-    name: cargo test + clippy + fmt
+    name: spend-core (test + clippy + fmt)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -33,17 +39,90 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # Whole workspace: formatting needs no build.
       - name: Format
         run: cargo fmt --all --check
 
-      # -D warnings: the workspace lints already set `unsafe_code = "forbid"` and
-      # `clippy::all = "warn"`, and a warning nobody fails on is a warning nobody
-      # reads.
+      # -D warnings: the workspace lints already set `unsafe_code = "forbid"`
+      # and `clippy::all = "warn"`, and a warning nobody fails on is a warning
+      # nobody reads.
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy -p spend-core --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --all-features
+        run: cargo test -p spend-core
+
+  ffi:
+    name: mobile-ffi (build + both namespaces)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Cargo's build outputs and the prebuilt libonnxruntime that ort-sys
+      # downloads, as ONE cache entry.
+      #
+      # These must not be split. A restored `target/` marks ort-sys's build
+      # script as already run, so the download that would refill the ORT dir
+      # never fires and nothing else can produce that archive — a hit on one
+      # without the other wedges the build. That is what happened to
+      # beanbeaver-ios's main branch (ios #57); don't rediscover it here.
+      - name: Cache cargo + ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            ~/.cache/ort.pyke.io
+          key: cargo-ort-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-ort-${{ runner.os }}-
+
+      - name: Clippy
+        run: cargo clippy -p bb-mobile-ffi --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p bb-mobile-ffi
+
+      # THE assertion this job exists for.
+      #
+      # bb-mobile-ffi depends on bb-receipt-ffi solely so that crate's uniffi
+      # scaffolding lands in this library. Nothing calls it, and an unreferenced
+      # dependency is not linked into a cdylib — so deleting the
+      # `use bb_receipt_ffi as _;` in lib.rs still builds, still passes every
+      # test above, and produces a library carrying only ONE namespace. Bindgen
+      # then emits half the API with no error, and the failure first shows up as
+      # a confusing missing-symbol error in an app.
+      #
+      # The size check is the cheap tell (~59 MB with the core, ~700 KB without)
+      # and the namespace check is the real one.
+      - name: Both namespaces are in the one library
+        run: |
+          set -euo pipefail
+          LIB=target/debug/libbb_mobile_ffi.so
+          test -f "$LIB" || { echo "::error::$LIB not built"; exit 1; }
+          echo "library size: $(stat -c%s "$LIB") bytes"
+          rm -rf gen
+          cargo run -q --bin uniffi-bindgen -- \
+            generate --library "$LIB" --language kotlin --out-dir gen
+          find gen -name '*.kt' | sort
+          for ns in bb_mobile_ffi bb_receipt_ffi; do
+            test -f "gen/uniffi/$ns/$ns.kt" || {
+              echo "::error::namespace $ns missing from the generated bindings."
+              echo "::error::Almost certainly the 'use bb_receipt_ffi as _;' in"
+              echo "::error::crates/mobile-ffi/src/lib.rs was removed."
+              exit 1; }
+          done
+          # Both loaders must resolve the one artifact that actually exists.
+          for ns in bb_mobile_ffi bb_receipt_ffi; do
+            grep -q 'return "bb_mobile_ffi"' "gen/uniffi/$ns/$ns.kt" || {
+              echo "::error::$ns resolves the wrong library name"; exit 1; }
+          done
+          echo "OK: one library, both namespaces, both resolving bb_mobile_ffi"
 
   # The shell and Python assets are the other half of this repo and nothing else
   # would ever compile them. Cheap syntax gates, not a test suite.

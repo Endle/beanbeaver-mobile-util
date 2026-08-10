@@ -12,6 +12,7 @@ a git submodule at `shared/`.
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device batch runner: scans a directory of JPEGs through the real core and writes `batch_out.json`. |
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point, run by each app's build script to emit Swift / Kotlin glue. |
 | `crates/spend-core/` | The spend/budget arithmetic both apps' spending screens are built on: month bucketing, category grouping, the drill-down. Zero dependencies. |
+| `crates/mobile-ffi/` | The UniFFI seam over `spend-core`, and the single library both apps link — one artifact carrying both this namespace and the parse core's. |
 
 `crates/` is an ordinary cargo workspace — `cargo test` runs here. The two
 `src/bin/*.rs` files are **not** part of it: they are source assets compiled
