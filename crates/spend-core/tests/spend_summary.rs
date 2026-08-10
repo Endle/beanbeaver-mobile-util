@@ -11,8 +11,9 @@
 //! epoch millis reinterpreted through the host's timezone.
 
 use spend_core::{
-    default_month_id, items, leaf_label, month, month_id, month_ids, month_label, price_value,
-    receipt_groups, Category, ItemTag, SpendDate, SpendInput, SpendItem, UNCATEGORIZED_ROOT,
+    declared_roots, default_month_id, items, leaf_label, month, month_id, month_ids, month_label,
+    price_value, receipt_groups, resolve_budget_root, Category, ItemTag, SpendDate, SpendInput,
+    SpendItem, FALLBACK_BUDGET_ROOT, UNCATEGORIZED_ROOT,
 };
 
 // ---------------------------------------------------------------------------
@@ -453,4 +454,60 @@ fn leaf_label_takes_the_last_authored_display() {
     assert_eq!("Grocery", leaf_label(&[grocery(), tag("grocery/x", "")]));
     assert_eq!("Uncategorized", leaf_label(&[]));
     assert_eq!("Uncategorized", leaf_label(&[tag("grocery", "")]));
+}
+
+// ---------------------------------------------------------------------------
+// The budget target's root
+//
+// Not covered by the Kotlin suite at all — `BudgetPrefs.root` reads a `Context`,
+// so it was never JVM-testable. Lifting the rule out of the storage is what
+// makes it pinnable, which is the whole argument for this crate in miniature.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn declared_roots_are_first_segments_in_corpus_order_deduplicated() {
+    let tags = vec![
+        tag("grocery", "Grocery"),
+        tag("grocery/dairy", "Dairy"),
+        tag("household", "Household"),
+        tag("grocery/bakery", "Bakery"),
+        tag("", "Empty"),
+    ];
+    assert_eq!(vec!["grocery", "household"], declared_roots(&tags));
+}
+
+/// The stored choice wins, but only while the corpus still declares it — a
+/// stored root can outlive the rule that produced it.
+#[test]
+fn a_stored_root_wins_only_while_it_is_still_declared() {
+    let declared = vec!["grocery".to_string(), "household".to_string()];
+    assert_eq!(
+        "household",
+        resolve_budget_root(Some("household"), &declared)
+    );
+    // Stored root has since vanished from the corpus -> the fallback, not it.
+    assert_eq!("grocery", resolve_budget_root(Some("petcare"), &declared));
+}
+
+#[test]
+fn the_fallback_root_is_named_rather_than_arbitrary() {
+    let declared = vec!["household".to_string(), "grocery".to_string()];
+    // "grocery" beats "household" despite being declared second.
+    assert_eq!("grocery", resolve_budget_root(None, &declared));
+}
+
+#[test]
+fn without_grocery_the_first_declared_root_stands_in() {
+    let declared = vec!["household".to_string(), "petcare".to_string()];
+    assert_eq!("household", resolve_budget_root(None, &declared));
+}
+
+/// Never empty, even against a corpus that declares nothing.
+#[test]
+fn an_empty_corpus_still_resolves_to_something() {
+    assert_eq!(FALLBACK_BUDGET_ROOT, resolve_budget_root(None, &[]));
+    assert_eq!(
+        FALLBACK_BUDGET_ROOT,
+        resolve_budget_root(Some("petcare"), &[])
+    );
 }

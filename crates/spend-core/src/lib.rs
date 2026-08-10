@@ -293,6 +293,59 @@ pub fn leaf_label(tags: &[ItemTag]) -> String {
 /// actually scanned.
 pub const UNCATEGORIZED_ROOT: &str = "uncategorized";
 
+// ---------------------------------------------------------------------------
+// The budget target's root
+//
+// Only the *resolution rule* lives here. Where the choice is stored stays
+// platform — `UserDefaults` on iOS, `SharedPreferences` on Android — and a
+// target is an overlay drawn on top of the arithmetic, never an input to it.
+// ---------------------------------------------------------------------------
+
+/// Fallback when nothing is stored and nothing better is declared — the app's
+/// most common use case names it directly rather than falling back to an
+/// arbitrary first tag.
+pub const FALLBACK_BUDGET_ROOT: &str = "grocery";
+
+/// Root tags the current rule corpus actually declares: first path segment only,
+/// in the order the corpus returns them, de-duplicated. What the root picker
+/// offers — never a hardcoded category list.
+pub fn declared_roots(tags: &[ItemTag]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut roots = Vec::new();
+    for tag in tags {
+        let root = tag.path.split('/').next().unwrap_or("");
+        if root.is_empty() {
+            continue;
+        }
+        if seen.insert(root) {
+            roots.push(root.to_string());
+        }
+    }
+    roots
+}
+
+/// The target's root tag: the user's stored choice if the corpus still declares
+/// it, else [`FALLBACK_BUDGET_ROOT`] if *that* is declared, else whatever the
+/// corpus declares first.
+///
+/// Never empty. The "still declares it" clause is the point — a stored root can
+/// outlive the rule that produced it, and a target pointing at a category the
+/// corpus no longer has would silently draw against nothing.
+pub fn resolve_budget_root(stored: Option<&str>, declared: &[String]) -> String {
+    if let Some(stored) = stored {
+        if declared.iter().any(|r| r == stored) {
+            return stored.to_string();
+        }
+    }
+    if declared.iter().any(|r| r == FALLBACK_BUDGET_ROOT) {
+        return FALLBACK_BUDGET_ROOT.to_string();
+    }
+    declared
+        .first()
+        .cloned()
+        .unwrap_or_else(|| FALLBACK_BUDGET_ROOT.to_string())
+}
+
 /// The item's top-level category. The classifier emits tags broad → specific, so
 /// the *first* tag carries the root. A path may itself be nested
 /// (`"grocery/meat"`), hence the split.
