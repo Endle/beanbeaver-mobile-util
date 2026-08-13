@@ -143,6 +143,14 @@ def main():
     ap.add_argument("--private-rules",
                     help="path to private_rules.toml; item categories whose expected description "
                          "matches one of its keywords are tolerated (the app runs public rules only)")
+    ap.add_argument("--consumer", choices=("ios", "android"),
+                    help="which app is being graded. A known_failure describes ONE engine at one "
+                         "version, and this corpus is replayed by four consumers on four core pins "
+                         "(desktop v0.3.2, core HEAD, and these two apps on their own tags against "
+                         "LIVE OCR rather than the committed snapshots). With this set, "
+                         "known_failures_<consumer> is honoured alongside the unscoped "
+                         "known_failures; without it only the unscoped key is read, which is the "
+                         "old behaviour. Schema: beanbeaver-private-test/CLAUDE.md")
     args = ap.parse_args()
 
     tol = load_private_keywords(args.private_rules) if args.private_rules else frozenset()
@@ -154,7 +162,12 @@ def main():
     for name in sorted(manifest):
         exp = json.load(open(manifest[name]))
         res = results.get(name)
+        # Unscoped marker = every consumer; `_<consumer>` = this app only. A
+        # scoped marker written for another engine must NOT be honoured here,
+        # which is why the suffix is read only when --consumer says who we are.
         known = set(exp.get("known_failures", []))
+        if args.consumer:
+            known |= set(exp.get(f"known_failures_{args.consumer}", []))
         tol_hits += sum(1 for c in (exp.get("critical_items") or [])
                         if (c.get("account") or c.get("category"))
                         and category_tolerated(c["description"].upper(), tol))
