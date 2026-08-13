@@ -259,7 +259,15 @@ fn worth_showing(kind: ReceiptWarningKind) -> bool {
         | ReceiptWarningKind::SubtotalMismatch
         | ReceiptWarningKind::PossibleMissedItem
         | ReceiptWarningKind::DroppedImplausiblePrice
-        | ReceiptWarningKind::TenderMismatch => true,
+        | ReceiptWarningKind::TenderMismatch
+        // Core v0.9.2. The summary block did not read coherently, so the total
+        // and tax anchoring the entry are untrustworthy — at least as serious as
+        // the two mismatches above, which merely disagree with each other. Shown
+        // here to match what both apps already do with it: the kind is newer
+        // than their `WarningSeverity` tables, so it falls to their unknown-kind
+        // arms, and both of those degrade to NOTICE — which is exactly the bar
+        // this function is the host twin of.
+        | ReceiptWarningKind::ImplausibleSummary => true,
         ReceiptWarningKind::PriceAutoCorrected | ReceiptWarningKind::UncategorizedItem => false,
     }
 }
