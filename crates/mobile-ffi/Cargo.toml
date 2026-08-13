@@ -30,7 +30,17 @@ spend-core = { path = "../spend-core" }
 # Depended on so its scaffolding lands in this library — see the `use ... as _`
 # in lib.rs. Nothing here calls it. Keep this tag in step with what the apps
 # expect; a breaking FFI change here is a breaking change for both of them.
-bb-receipt-ffi = { git = "https://github.com/Endle/beanbeaver-core", tag = "v0.9.0" }
+bb-receipt-ffi = { git = "https://github.com/Endle/beanbeaver-core", tag = "v0.9.1" }
 # `cli` provides uniffi_bindgen_main() for the bin above. Must match the uniffi
 # that bb-receipt-ffi pulls in (0.28).
 uniffi = { version = "0.28", features = ["cli"] }
+
+[features]
+# Forwarded to the parse core, which forwards to ocr-paddle. Both are off by
+# default; each app opts in from its own build script, because the right
+# execution provider is per-platform: iOS uses CoreML (Neural Engine), Android
+# has no accelerator wired up at all and XNNPACK is the candidate. The forward
+# has to exist here because this library is what the apps actually link — the
+# core's feature is unreachable from them otherwise.
+coreml = ["bb-receipt-ffi/coreml"]
+xnnpack = ["bb-receipt-ffi/xnnpack"]
