@@ -77,7 +77,17 @@ side, not host Rust, which skips the real serialization.
 
 **`models/` is deliberately not here.** The weights are large binaries and the
 current arrangement works: iOS commits them, Android fetches them from the
-`ocr-models-v1` release on `beanbeaver-core`.
+`ocr-models-v2` release on `beanbeaver-core`.
+
+**That release pointer is coupled to the core tag the consuming app pins**, and
+it is the one thing in this repo that can break an app without touching a line
+of its code. Core resolves the three weights **by exact filename**
+(`scan::model_files`), so an app on core ≤ v0.9.4 needs `ocr-models-v1` and its
+`PP-LCNet_x1_0_textline_ori.onnx`, while core ≥ v0.10.0 needs v2 and
+`PP-LCNet_x0_25_textline_ori.onnx`. Moving this pointer therefore lands in the
+*same commit* as that app's core tag bump, never on its own — the failure mode
+is a missing-file error at session load, on a device, with a green host build.
+`fetch-models.sh`'s header is the authority; keep these two in step.
 
 ## Two kinds of Rust live here, and they are built differently
 
