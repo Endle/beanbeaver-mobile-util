@@ -8,7 +8,7 @@ a git submodule at `shared/`.
 | | |
 |---|---|
 | `scripts/compare-e2e.py` | Grades a batch scan's `batch_out.json` against `<stem>.expected.json` ground truth — fuzzy merchant, exact date/total, per-item description/price/account. |
-| `scripts/fetch-models.sh` | Downloads the three PP-OCRv5 ONNX weights from `beanbeaver-core`'s `ocr-models-v1` release. |
+| `scripts/fetch-models.sh` | Downloads the three PP-OCRv5 ONNX weights from `beanbeaver-core`'s `ocr-models-v2` release. **Which release is coupled to the core tag the calling app pins** — core resolves the files by exact name, so read the script's header before moving it. |
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device batch runner: scans a directory of JPEGs through the real core and writes `batch_out.json`. |
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point, run by each app's build script to emit Swift / Kotlin glue. |
 | `crates/spend-core/` | The spend/budget arithmetic both apps' spending screens are built on: month bucketing, category grouping, the drill-down. Zero dependencies. |
