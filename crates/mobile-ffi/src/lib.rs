@@ -177,6 +177,55 @@ pub struct SpendReceiptGroup {
     pub receipt_total: Option<f64>,
 }
 
+/// A half-open span of days, `[start, end)` — a receipt dated `end` belongs to
+/// the next span.
+#[derive(uniffi::Record)]
+pub struct SpendDateRange {
+    pub start: SpendDate,
+    pub end: SpendDate,
+}
+
+/// One bucket of a trend series, carrying the span it covers.
+///
+/// The span travels with the amount because the newest bucket is normally a
+/// *partial* week — the one containing today — and only the view can say so.
+#[derive(uniffi::Record)]
+pub struct SpendTrendPoint {
+    pub range: SpendDateRange,
+    pub amount: f64,
+}
+
+/// The weekly series behind the home chart and the scoped week-over-week card.
+///
+/// Every figure is rounded to whole cents, so the value that crosses this seam
+/// is the value drawn: two identical weeks give a `delta` of exactly `0.0`, and
+/// a view can say "same as last week" with a plain comparison.
+#[derive(uniffi::Record)]
+pub struct SpendTrend {
+    /// Oldest first. The last is the week containing today, and is partial for
+    /// six days out of seven.
+    pub points: Vec<SpendTrendPoint>,
+    /// The mean of `points` — the chart's dashed reference line.
+    pub mean: f64,
+    /// `week_to_date` minus `previous_week_to_date` — "↑ $15.20 vs last week".
+    ///
+    /// **Not the newest bucket minus the one before it.** The newest bucket is a
+    /// partial week six days out of seven, so that comparison reads as a steep
+    /// decline every Monday. This compares the week so far against the same span
+    /// of the previous week.
+    pub delta: f64,
+    /// This week from its first day through today inclusive.
+    pub week_to_date: f64,
+    /// The same span shifted back seven days.
+    pub previous_week_to_date: f64,
+    /// The span `week_to_date` covers; `previous_week_to_date` covers it shifted
+    /// back seven days.
+    pub week_to_date_range: SpendDateRange,
+    /// The trailing window ending today inclusive — the "last 30 days" figure.
+    pub rolling: f64,
+    pub rolling_range: SpendDateRange,
+}
+
 // ---------------------------------------------------------------------------
 // Conversions
 //
@@ -301,6 +350,49 @@ impl From<core::ReceiptGroup> for SpendReceiptGroup {
     }
 }
 
+impl From<core::DateRange> for SpendDateRange {
+    fn from(v: core::DateRange) -> Self {
+        SpendDateRange {
+            start: v.start.into(),
+            end: v.end.into(),
+        }
+    }
+}
+
+impl From<core::SpendDate> for SpendDate {
+    fn from(v: core::SpendDate) -> Self {
+        SpendDate {
+            year: v.year,
+            month: v.month,
+            day: v.day,
+        }
+    }
+}
+
+impl From<core::TrendPoint> for SpendTrendPoint {
+    fn from(v: core::TrendPoint) -> Self {
+        SpendTrendPoint {
+            range: v.range.into(),
+            amount: v.amount,
+        }
+    }
+}
+
+impl From<core::Trend> for SpendTrend {
+    fn from(v: core::Trend) -> Self {
+        SpendTrend {
+            points: v.points.into_iter().map(Into::into).collect(),
+            mean: v.mean,
+            delta: v.delta,
+            week_to_date: v.week_to_date,
+            previous_week_to_date: v.previous_week_to_date,
+            week_to_date_range: v.week_to_date_range.into(),
+            rolling: v.rolling,
+            rolling_range: v.rolling_range.into(),
+        }
+    }
+}
+
 fn to_core_records(records: Vec<SpendInput>) -> Vec<core::SpendInput> {
     records.into_iter().map(Into::into).collect()
 }
@@ -403,6 +495,43 @@ pub fn spend_declared_roots(tags: Vec<SpendTag>) -> Vec<String> {
 #[uniffi::export]
 pub fn spend_resolve_budget_root(stored: Option<String>, declared: Vec<String>) -> String {
     core::resolve_budget_root(stored.as_deref(), &declared)
+}
+
+/// The weekly trend for `scope` — the home chart, and the Spending screen's
+/// scoped week-over-week card, in one call.
+///
+/// `scope` of `None` means all spending, and is **items plus tax** so it agrees
+/// with `SpendMonth::tracked`, the headline the home chart sits under. A
+/// category scope is items alone, because tax is not attributable to one.
+///
+/// `first_weekday` is `1 = Sunday … 7 = Saturday` — ICU's numbering, which
+/// `Calendar.current.firstWeekday` gives directly. **Kotlin's
+/// `WeekFields.firstDayOfWeek` is a `DayOfWeek` (`MONDAY = 1 … SUNDAY = 7`) and
+/// must be converted**, or the two apps draw the same receipts in different
+/// weeks. Out-of-range values fall back to Sunday.
+///
+/// One call rather than four: both apps rebuild the summary on every render and
+/// cross this seam with the whole record list each time, so the number of
+/// crossings per frame is the thing worth keeping down.
+#[uniffi::export]
+pub fn spend_trend(
+    records: Vec<SpendInput>,
+    scope: Option<SpendCategory>,
+    today: SpendDate,
+    first_weekday: u32,
+    weeks: u32,
+    rolling_days: u32,
+) -> SpendTrend {
+    let scope = scope.map(core::Category::from);
+    core::trend(
+        &to_core_records(records),
+        scope.as_ref(),
+        today.into(),
+        first_weekday,
+        weeks,
+        rolling_days,
+    )
+    .into()
 }
 
 /// Sentinel root for items the classifier left untagged, exposed so a caller can

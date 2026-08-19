@@ -49,7 +49,14 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// A calendar date, already resolved in whatever timezone the caller considers
-/// local. Only ever compared and formatted, never arithmetic'd.
+/// local.
+///
+/// Compared, formatted, and — since the trend buckets — arithmetic'd, but only
+/// ever as a *civil* date. Day arithmetic here is pure integer math on the
+/// proleptic Gregorian calendar (see [`days_from_civil`]); it never touches a
+/// timezone, so it can't disagree with the platform that resolved the date in
+/// the first place. Turning an *instant* into one of these stays the caller's
+/// job, for the reasons in the crate docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpendDate {
     pub year: i32,
@@ -745,5 +752,300 @@ pub fn month(id: &str, records: &[SpendInput]) -> Month {
         record_ids: month_records.iter().map(|r| r.id.clone()).collect(),
         max_leaf_amount,
         unaccounted,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trend
+//
+// "Is this month climbing?" — the weekly series behind the home card's chart
+// and the Spending screen's scoped week-over-week card. Both screens call
+// [`trend`] once and render what comes back; the delta, the mean and the
+// rolling window are computed here rather than in two view layers, for the
+// same reason the month totals are.
+// ---------------------------------------------------------------------------
+
+/// Days since 1970-01-01 for a proleptic Gregorian civil date.
+///
+/// Howard Hinnant's `days_from_civil`, which is exact for every date this app
+/// can hold and needs no table. Shifting the era to March makes the leap day
+/// the last day of the year, which is what removes the special-casing.
+///
+/// This is the one piece of calendar knowledge the crate has, and it is
+/// deliberately the *timezone-free* piece: two dates are this many days apart
+/// regardless of where they were resolved, so Swift and Kotlin cannot bucket
+/// the same receipt into different weeks.
+fn days_from_civil(date: SpendDate) -> i64 {
+    let y = date.year as i64 - i64::from(date.month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let m = date.month as i64;
+    let d = date.day as i64;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
+/// The inverse of [`days_from_civil`].
+fn civil_from_days(days: i64) -> SpendDate {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = mp + if mp < 10 { 3 } else { -9 }; // [1, 12]
+    SpendDate {
+        year: (y + i64::from(m <= 2)) as i32,
+        month: m as u32,
+        day: d as u32,
+    }
+}
+
+/// Day of the week as 0 = Sunday … 6 = Saturday.
+///
+/// 1970-01-01 was a Thursday, so day 0 maps to 4.
+fn weekday(date: SpendDate) -> i64 {
+    let days = days_from_civil(date);
+    ((days + 4) % 7 + 7) % 7
+}
+
+/// A half-open span of days, `[start, end)`.
+///
+/// Half-open so consecutive buckets tile without a receipt landing in two of
+/// them, and so a "week" is seven days regardless of which day it starts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateRange {
+    pub start: SpendDate,
+    /// Exclusive: a receipt dated `end` belongs to the *next* range.
+    pub end: SpendDate,
+}
+
+/// One bucket of the series, carrying the span it covers.
+///
+/// The span travels with the amount because the newest bucket is normally a
+/// *partial* week — the one containing today — and only the caller knows how to
+/// say so. Without it a view has no way to tell a quiet week from a Monday.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrendPoint {
+    pub range: DateRange,
+    pub amount: f64,
+}
+
+/// What the trend surfaces need, in one answer.
+///
+/// # Every figure is rounded to whole cents
+///
+/// Sums accumulate in `f64` — the same representation the rest of this crate
+/// uses, where the error over grocery-scale data is ~1e-13 and cannot reach a
+/// two-decimal display. The rounding is not about that. It is so the value that
+/// crosses the FFI *is* the value drawn: two identical weeks give a `delta` of
+/// exactly `0.0` rather than `3e-14`, and a view can say "same as last week"
+/// with a plain comparison instead of an epsilon nobody remembers to apply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trend {
+    /// Oldest first, one per week requested. The last is the week containing
+    /// "today", and is partial for six days out of seven.
+    pub points: Vec<TrendPoint>,
+    /// The mean of `points` — the chart's dashed reference line. Zero when
+    /// there are no points.
+    pub mean: f64,
+    /// `week_to_date` minus `previous_week_to_date` — the headline "↑ $15.20 vs
+    /// last week".
+    ///
+    /// **Deliberately not the newest bucket minus the one before it.** The
+    /// newest bucket is a *partial* week six days out of seven, so comparing it
+    /// against a whole one reads as a steep decline every Monday and only comes
+    /// right on the last day of the week. This compares like with like: the
+    /// week so far against the same span of the previous week.
+    pub delta: f64,
+    /// This week from its first day through today inclusive.
+    pub week_to_date: f64,
+    /// The same span shifted back seven days — Sunday-through-Wednesday last
+    /// week, if today is a Wednesday and weeks start on Sunday.
+    pub previous_week_to_date: f64,
+    /// The span `week_to_date` covers. `previous_week_to_date` covers exactly
+    /// this shifted back seven days; a view that names the comparison window
+    /// should say so from this rather than re-deriving the week start.
+    pub week_to_date_range: DateRange,
+    /// The trailing window ending today inclusive — the "in the last 30 days"
+    /// figure, which is a truer reading than the calendar month early in a
+    /// month and is shown beside it rather than instead of it.
+    pub rolling: f64,
+    /// The span `rolling` covers, for the same reason [`TrendPoint`] carries one.
+    pub rolling_range: DateRange,
+}
+
+/// `f64` to whole cents. See [`Trend`] for why this happens at the boundary.
+fn round_cents(amount: f64) -> f64 {
+    (amount * 100.0).round() / 100.0
+}
+
+/// The calendar date a record belongs to: its own receipt date, unless that is
+/// missing, a placeholder or unparseable, in which case its
+/// [`SpendInput::scanned_on`] steps in.
+///
+/// Exactly [`month_id`]'s rule at day resolution, and deliberately the same
+/// code shape — a receipt must not land in one month by one rule and one week
+/// by another.
+pub fn record_date(record: &SpendInput) -> SpendDate {
+    if !record.date_is_placeholder {
+        if let Some(parsed) = record.date_iso.as_deref().and_then(parse_iso_date) {
+            return parsed;
+        }
+    }
+    record.scanned_on
+}
+
+/// What one record contributes to `scope`.
+///
+/// **Unscoped is items *plus tax*, a category is items alone.** Unscoped has to
+/// agree with [`Month::tracked`], which is the headline the chart sits under;
+/// tax is not attributable to a category, so a scoped series that included it
+/// would not sum to its card. Getting this backwards is the kind of thing that
+/// shows up as a chart quietly disagreeing with the number above it.
+fn scoped_amount(record: &SpendInput, scope: Option<&Category>) -> f64 {
+    match scope {
+        None => {
+            let items: f64 = record
+                .items
+                .iter()
+                .map(|i| price_value(&i.price).unwrap_or(0.0))
+                .sum();
+            items + price_value_opt(record.tax.as_ref()).unwrap_or(0.0)
+        }
+        Some(category) => record
+            .items
+            .iter()
+            .filter(|i| matches(category, i))
+            .map(|i| price_value(&i.price).unwrap_or(0.0))
+            .sum(),
+    }
+}
+
+/// Sum `records` under `scope` over each of `ranges`, in the order given.
+///
+/// Excluded receipts are left out, matching every other figure on the spending
+/// screen. A record outside every range simply doesn't land anywhere — the
+/// ranges are the question, not a partition of the data.
+pub fn bucketed(
+    records: &[SpendInput],
+    scope: Option<&Category>,
+    ranges: &[DateRange],
+) -> Vec<f64> {
+    let bounds: Vec<(i64, i64)> = ranges
+        .iter()
+        .map(|r| (days_from_civil(r.start), days_from_civil(r.end)))
+        .collect();
+    let mut totals = vec![0.0; ranges.len()];
+
+    for record in records.iter().filter(|r| !r.is_excluded) {
+        let day = days_from_civil(record_date(record));
+        // A record can only be in one half-open range unless the caller passed
+        // overlapping ones, which is its prerogative — hence no early break.
+        for (index, (start, end)) in bounds.iter().enumerate() {
+            if day >= *start && day < *end {
+                totals[index] += scoped_amount(record, scope);
+            }
+        }
+    }
+    totals.iter().copied().map(round_cents).collect()
+}
+
+/// The `weeks` most recent weeks ending with the one containing `today`, oldest
+/// first, plus the trailing `rolling_days` window.
+///
+/// `first_weekday` is `1 = Sunday … 7 = Saturday` — ICU's numbering, which is
+/// what `Calendar.current.firstWeekday` gives directly. **Kotlin's
+/// `WeekFields.firstDayOfWeek` is a `DayOfWeek` (`MONDAY = 1 … SUNDAY = 7`) and
+/// must be converted**, or the two apps will draw the same receipts in
+/// different weeks. Out-of-range values fall back to Sunday.
+///
+/// The caller supplies the week start rather than this crate assuming one, for
+/// the same reason it supplies "today": it is a locale fact the platform
+/// already knows and this crate has no way to look up.
+pub fn trend(
+    records: &[SpendInput],
+    scope: Option<&Category>,
+    today: SpendDate,
+    first_weekday: u32,
+    weeks: u32,
+    rolling_days: u32,
+) -> Trend {
+    let first = if (1..=7).contains(&first_weekday) {
+        first_weekday as i64 - 1
+    } else {
+        0
+    };
+    let today_days = days_from_civil(today);
+    let this_week_start = today_days - ((weekday(today) - first) % 7 + 7) % 7;
+
+    let ranges: Vec<DateRange> = (0..weeks as i64)
+        .rev() // oldest first
+        .map(|back| {
+            let start = this_week_start - back * 7;
+            DateRange {
+                start: civil_from_days(start),
+                end: civil_from_days(start + 7),
+            }
+        })
+        .collect();
+
+    // Inclusive of today, hence the +1 on the exclusive end: "the last 30 days"
+    // is today and the 29 before it, not today and the 30 before it.
+    let rolling_range = DateRange {
+        start: civil_from_days(today_days - (rolling_days as i64 - 1).max(0)),
+        end: civil_from_days(today_days + 1),
+    };
+
+    // The week so far, and the same span of the previous week. Both are needed
+    // whatever `weeks` is, so the delta does not depend on how much of the
+    // series the caller asked to chart.
+    let week_to_date_range = DateRange {
+        start: civil_from_days(this_week_start),
+        end: civil_from_days(today_days + 1),
+    };
+    let previous_week_to_date_range = DateRange {
+        start: civil_from_days(this_week_start - 7),
+        end: civil_from_days(today_days + 1 - 7),
+    };
+
+    // One pass for every window, so the record list is walked once per render
+    // rather than four times.
+    let mut all = ranges.clone();
+    all.push(rolling_range);
+    all.push(week_to_date_range);
+    all.push(previous_week_to_date_range);
+    let mut amounts = bucketed(records, scope, &all);
+    let previous_week_to_date = amounts.pop().expect("pushed");
+    let week_to_date = amounts.pop().expect("pushed");
+    let rolling = amounts.pop().expect("pushed");
+
+    let points: Vec<TrendPoint> = ranges
+        .iter()
+        .zip(&amounts)
+        .map(|(range, amount)| TrendPoint {
+            range: *range,
+            amount: *amount,
+        })
+        .collect();
+
+    let mean = if points.is_empty() {
+        0.0
+    } else {
+        round_cents(amounts.iter().sum::<f64>() / points.len() as f64)
+    };
+
+    Trend {
+        points,
+        mean,
+        delta: round_cents(week_to_date - previous_week_to_date),
+        week_to_date,
+        previous_week_to_date,
+        week_to_date_range,
+        rolling,
+        rolling_range,
     }
 }
