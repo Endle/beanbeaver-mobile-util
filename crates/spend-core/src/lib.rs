@@ -852,9 +852,24 @@ pub struct Trend {
     /// The mean of `points` — the chart's dashed reference line. Zero when
     /// there are no points.
     pub mean: f64,
-    /// Newest week minus the one before it, or `None` with fewer than two
-    /// weeks. Compares a partial week against a whole one; see [`TrendPoint`].
-    pub delta: Option<f64>,
+    /// `week_to_date` minus `previous_week_to_date` — the headline "↑ $15.20 vs
+    /// last week".
+    ///
+    /// **Deliberately not the newest bucket minus the one before it.** The
+    /// newest bucket is a *partial* week six days out of seven, so comparing it
+    /// against a whole one reads as a steep decline every Monday and only comes
+    /// right on the last day of the week. This compares like with like: the
+    /// week so far against the same span of the previous week.
+    pub delta: f64,
+    /// This week from its first day through today inclusive.
+    pub week_to_date: f64,
+    /// The same span shifted back seven days — Sunday-through-Wednesday last
+    /// week, if today is a Wednesday and weeks start on Sunday.
+    pub previous_week_to_date: f64,
+    /// The span `week_to_date` covers. `previous_week_to_date` covers exactly
+    /// this shifted back seven days; a view that names the comparison window
+    /// should say so from this rather than re-deriving the week start.
+    pub week_to_date_range: DateRange,
     /// The trailing window ending today inclusive — the "in the last 30 days"
     /// figure, which is a truer reading than the calendar month early in a
     /// month and is shown beside it rather than instead of it.
@@ -985,7 +1000,29 @@ pub fn trend(
         end: civil_from_days(today_days + 1),
     };
 
-    let amounts = bucketed(records, scope, &ranges);
+    // The week so far, and the same span of the previous week. Both are needed
+    // whatever `weeks` is, so the delta does not depend on how much of the
+    // series the caller asked to chart.
+    let week_to_date_range = DateRange {
+        start: civil_from_days(this_week_start),
+        end: civil_from_days(today_days + 1),
+    };
+    let previous_week_to_date_range = DateRange {
+        start: civil_from_days(this_week_start - 7),
+        end: civil_from_days(today_days + 1 - 7),
+    };
+
+    // One pass for every window, so the record list is walked once per render
+    // rather than four times.
+    let mut all = ranges.clone();
+    all.push(rolling_range);
+    all.push(week_to_date_range);
+    all.push(previous_week_to_date_range);
+    let mut amounts = bucketed(records, scope, &all);
+    let previous_week_to_date = amounts.pop().expect("pushed");
+    let week_to_date = amounts.pop().expect("pushed");
+    let rolling = amounts.pop().expect("pushed");
+
     let points: Vec<TrendPoint> = ranges
         .iter()
         .zip(&amounts)
@@ -1000,22 +1037,14 @@ pub fn trend(
     } else {
         round_cents(amounts.iter().sum::<f64>() / points.len() as f64)
     };
-    let delta = if points.len() >= 2 {
-        Some(round_cents(
-            points[points.len() - 1].amount - points[points.len() - 2].amount,
-        ))
-    } else {
-        None
-    };
-    let rolling = bucketed(records, scope, &[rolling_range])
-        .first()
-        .copied()
-        .unwrap_or(0.0);
 
     Trend {
         points,
         mean,
-        delta,
+        delta: round_cents(week_to_date - previous_week_to_date),
+        week_to_date,
+        previous_week_to_date,
+        week_to_date_range,
         rolling,
         rolling_range,
     }

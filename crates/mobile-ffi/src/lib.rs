@@ -207,8 +207,20 @@ pub struct SpendTrend {
     pub points: Vec<SpendTrendPoint>,
     /// The mean of `points` — the chart's dashed reference line.
     pub mean: f64,
-    /// Newest week minus the one before, or `None` with fewer than two weeks.
-    pub delta: Option<f64>,
+    /// `week_to_date` minus `previous_week_to_date` — "↑ $15.20 vs last week".
+    ///
+    /// **Not the newest bucket minus the one before it.** The newest bucket is a
+    /// partial week six days out of seven, so that comparison reads as a steep
+    /// decline every Monday. This compares the week so far against the same span
+    /// of the previous week.
+    pub delta: f64,
+    /// This week from its first day through today inclusive.
+    pub week_to_date: f64,
+    /// The same span shifted back seven days.
+    pub previous_week_to_date: f64,
+    /// The span `week_to_date` covers; `previous_week_to_date` covers it shifted
+    /// back seven days.
+    pub week_to_date_range: SpendDateRange,
     /// The trailing window ending today inclusive — the "last 30 days" figure.
     pub rolling: f64,
     pub rolling_range: SpendDateRange,
@@ -372,6 +384,9 @@ impl From<core::Trend> for SpendTrend {
             points: v.points.into_iter().map(Into::into).collect(),
             mean: v.mean,
             delta: v.delta,
+            week_to_date: v.week_to_date,
+            previous_week_to_date: v.previous_week_to_date,
+            week_to_date_range: v.week_to_date_range.into(),
             rolling: v.rolling,
             rolling_range: v.rolling_range.into(),
         }

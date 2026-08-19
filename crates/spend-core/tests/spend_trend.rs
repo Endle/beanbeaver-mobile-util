@@ -307,13 +307,71 @@ fn an_out_of_range_first_weekday_falls_back_to_sunday() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_delta_is_the_newest_week_minus_the_one_before() {
+fn the_delta_compares_the_week_so_far_with_the_same_span_last_week() {
+    // Today is Wednesday 2026-03-04, weeks start Sunday. The comparison window
+    // is Sun–Wed of each week, not the whole of last week.
     let records = vec![
-        dairy_receipt("prev", "2026-02-25", "30.00"), // week of 2026-02-22
-        dairy_receipt("now", "2026-03-04", "45.20"),  // week of 2026-03-01
+        dairy_receipt("prev", "2026-02-25", "30.00"), // Wed of last week
+        dairy_receipt("now", "2026-03-04", "45.20"),  // Wed of this week
     ];
     let t = trend(&records, None, day(2026, 3, 4), SUNDAY, 6, 30);
-    approx(t.delta.expect("two weeks"), 15.20);
+    approx(t.week_to_date, 45.20);
+    approx(t.previous_week_to_date, 30.00);
+    approx(t.delta, 15.20);
+    assert_eq!(t.week_to_date_range.start, day(2026, 3, 1));
+    assert_eq!(t.week_to_date_range.end, day(2026, 3, 5));
+}
+
+#[test]
+fn spending_later_in_the_previous_week_is_outside_the_comparison() {
+    // This is what separates week-to-date from whole-week: today is Wednesday,
+    // and last Friday's $99 is in last week's *bucket* but not in the Sun–Wed
+    // span being compared. Comparing whole weeks would call this a $99 fall.
+    let records = vec![
+        dairy_receipt("mon", "2026-02-23", "10.00"), // inside the span
+        dairy_receipt("fri", "2026-02-27", "99.00"), // after it, same week
+        dairy_receipt("now", "2026-03-02", "10.00"), // Monday this week
+    ];
+    let t = trend(&records, None, day(2026, 3, 4), SUNDAY, 6, 30);
+    approx(t.previous_week_to_date, 10.00);
+    approx(t.delta, 0.00);
+
+    // The chart still shows the whole week, $99 included — the exclusion is the
+    // comparison's, not the series'.
+    let last_week = &t.points[t.points.len() - 2];
+    approx(last_week.amount, 109.00);
+}
+
+#[test]
+fn on_the_last_day_of_the_week_the_comparison_covers_both_weeks_whole() {
+    // Saturday 2026-03-07 with Sunday-start weeks: the span is all seven days,
+    // so week-to-date and whole-week agree, which is the only day they do.
+    let records = vec![
+        dairy_receipt("prev", "2026-02-27", "99.00"),
+        dairy_receipt("now", "2026-03-06", "40.00"),
+    ];
+    let t = trend(&records, None, day(2026, 3, 7), SUNDAY, 6, 30);
+    assert_eq!(t.week_to_date_range.start, day(2026, 3, 1));
+    assert_eq!(t.week_to_date_range.end, day(2026, 3, 8));
+    approx(t.previous_week_to_date, 99.00);
+    approx(t.week_to_date, 40.00);
+    approx(t.delta, -59.00);
+}
+
+#[test]
+fn the_delta_does_not_depend_on_how_many_weeks_are_charted() {
+    // It is computed from `today`, not from the series, so a caller charting
+    // one week and a caller charting six get the same headline.
+    let records = vec![
+        dairy_receipt("prev", "2026-02-25", "30.00"),
+        dairy_receipt("now", "2026-03-04", "45.20"),
+    ];
+    let six = trend(&records, None, day(2026, 3, 4), SUNDAY, 6, 30);
+    let one = trend(&records, None, day(2026, 3, 4), SUNDAY, 1, 30);
+    let none = trend(&records, None, day(2026, 3, 4), SUNDAY, 0, 30);
+    approx(six.delta, 15.20);
+    approx(one.delta, 15.20);
+    approx(none.delta, 15.20);
 }
 
 #[test]
@@ -328,13 +386,7 @@ fn two_identical_weeks_give_a_delta_of_exactly_zero() {
         dairy_receipt("b2", "2026-03-04", "20.20"),
     ];
     let t = trend(&records, None, day(2026, 3, 4), SUNDAY, 6, 30);
-    assert_eq!(t.delta, Some(0.0));
-}
-
-#[test]
-fn the_delta_is_none_with_fewer_than_two_weeks() {
-    let t = trend(&[], None, day(2026, 3, 4), SUNDAY, 1, 30);
-    assert_eq!(t.delta, None);
+    assert_eq!(t.delta, 0.0);
 }
 
 #[test]
@@ -399,7 +451,7 @@ fn nothing_scanned_gives_a_flat_series_rather_than_an_empty_one() {
     assert_eq!(amounts(&t), vec![0.0; 6]);
     approx(t.mean, 0.0);
     approx(t.rolling, 0.0);
-    assert_eq!(t.delta, Some(0.0));
+    assert_eq!(t.delta, 0.0);
 }
 
 #[test]
@@ -407,5 +459,5 @@ fn zero_weeks_requested_is_empty_rather_than_a_panic() {
     let t = trend(&[], None, day(2026, 3, 4), SUNDAY, 0, 30);
     assert!(t.points.is_empty());
     approx(t.mean, 0.0);
-    assert_eq!(t.delta, None);
+    approx(t.delta, 0.0);
 }

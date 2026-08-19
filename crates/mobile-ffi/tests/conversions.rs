@@ -198,7 +198,14 @@ fn the_trend_crosses_the_seam_with_its_ranges_intact() {
     assert_eq!(1, newest.range.start.day);
     assert_eq!(8, newest.range.end.day);
 
-    assert_eq!(Some(15.20), trend.delta);
+    // Sun–Wed of each week, not the whole of last week — see `spend_trend`.
+    assert_eq!(45.20, trend.week_to_date);
+    assert_eq!(30.00, trend.previous_week_to_date);
+    assert_eq!(15.20, trend.delta);
+    assert_eq!(3, trend.week_to_date_range.start.month);
+    assert_eq!(1, trend.week_to_date_range.start.day);
+    assert_eq!(5, trend.week_to_date_range.end.day);
+
     assert_eq!(12.53, trend.mean); // (30.00 + 45.20) / 6, to cents
     assert_eq!(75.20, trend.rolling);
     assert_eq!(2, trend.rolling_range.start.month);
