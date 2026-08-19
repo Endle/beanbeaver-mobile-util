@@ -124,6 +124,14 @@ output means no change is needed.
 built by `cargo test` / `cargo build` here. The distinction matters: a change to `spend-core` is proven in this repo,
 while a change to `src/bin/*.rs` can only be proven in an app.
 
+**`spend_trend`'s `first_weekday` uses ICU numbering — `1 = Sunday … 7 =
+Saturday`.** That is what `Calendar.current.firstWeekday` returns directly, so
+iOS passes it through. **Kotlin's `WeekFields.firstDayOfWeek` is a `DayOfWeek`,
+where `MONDAY = 1` and `SUNDAY = 7`, and must be converted.** Passing it raw is
+silent: nothing errors, the chart still draws, and the two apps simply bucket
+the same receipts into different weeks. `the_first_weekday_moves_the_boundary`
+in `spend-core`'s tests is the assertion that pins the convention.
+
 This makes the repo root a **workspace root nested inside each app's package
 directory** (`beanbeaver-android/shared/Cargo.toml`). That is fine — cargo does
 not scan subdirectories for packages, so the app's build never sees it.

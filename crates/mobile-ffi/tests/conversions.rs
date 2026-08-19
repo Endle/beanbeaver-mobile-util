@@ -10,7 +10,8 @@
 
 use bb_mobile_ffi::{
     spend_declared_roots, spend_items, spend_month, spend_month_id, spend_receipt_groups,
-    spend_resolve_budget_root, SpendCategory, SpendDate, SpendInput, SpendItem, SpendTag,
+    spend_resolve_budget_root, spend_trend, SpendCategory, SpendDate, SpendInput, SpendItem,
+    SpendTag,
 };
 
 fn tag(path: &str, display: &str) -> SpendTag {
@@ -166,6 +167,74 @@ fn the_budget_root_rule_crosses_the_seam() {
         "household",
         spend_resolve_budget_root(Some("household".into()), declared)
     );
+}
+
+#[test]
+fn the_trend_crosses_the_seam_with_its_ranges_intact() {
+    // Four `f64`s again — `mean`, `delta`, `rolling` and the newest point — so
+    // they are given four different values, and the two `SpendDateRange`s are
+    // checked separately because both are the same type.
+    let dated = |id: &str, iso: &str, price: &str| SpendInput {
+        date_iso: Some(iso.into()),
+        ..record(id, price, None, vec![item("Milk", price, vec![])])
+    };
+    let records = vec![
+        dated("prev", "2026-02-25", "30.00"),
+        dated("now", "2026-03-04", "45.20"),
+    ];
+
+    let today = SpendDate {
+        year: 2026,
+        month: 3,
+        day: 4,
+    };
+    let trend = spend_trend(records, None, today, 1, 6, 30);
+
+    assert_eq!(6, trend.points.len());
+    let newest = trend.points.last().expect("six weeks");
+    assert_eq!(45.20, newest.amount);
+    assert_eq!(2026, newest.range.start.year);
+    assert_eq!(3, newest.range.start.month);
+    assert_eq!(1, newest.range.start.day);
+    assert_eq!(8, newest.range.end.day);
+
+    assert_eq!(Some(15.20), trend.delta);
+    assert_eq!(12.53, trend.mean); // (30.00 + 45.20) / 6, to cents
+    assert_eq!(75.20, trend.rolling);
+    assert_eq!(2, trend.rolling_range.start.month);
+    assert_eq!(3, trend.rolling_range.start.day);
+    assert_eq!(5, trend.rolling_range.end.day);
+}
+
+#[test]
+fn a_scope_crosses_the_seam_as_the_category_it_names() {
+    let records = vec![record(
+        "mixed",
+        "30.00",
+        None,
+        vec![
+            item("Milk", "10.00", vec![tag("grocery", "Grocery")]),
+            item("Soap", "20.00", vec![tag("household", "Household")]),
+        ],
+    )];
+    let today = SpendDate {
+        year: 2026,
+        month: 7,
+        day: 15,
+    };
+    let scope = SpendCategory::Root {
+        id: "household".into(),
+    };
+    let later = SpendDate {
+        year: today.year,
+        month: today.month,
+        day: today.day,
+    };
+    let trend = spend_trend(records.clone_all(), Some(scope), today, 1, 6, 30);
+    assert_eq!(20.00, trend.rolling);
+
+    let unscoped = spend_trend(records, None, later, 1, 6, 30);
+    assert_eq!(30.00, unscoped.rolling);
 }
 
 // The uniffi records are deliberately not `Clone` — they are FFI payloads, moved
