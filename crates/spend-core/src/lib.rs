@@ -300,6 +300,17 @@ pub fn leaf_label(tags: &[ItemTag]) -> String {
 /// actually scanned.
 pub const UNCATEGORIZED_ROOT: &str = "uncategorized";
 
+/// The app's headline category, pinned to the top of [`Month::roots`].
+///
+/// This is a grocery tracker: groceries are what the user opens the app to see,
+/// and a month where the big shop happened to be smaller than one furniture
+/// run should not bury it. Everything else still sorts by amount, so the
+/// ordering is "the category you came for, then the rest, largest first".
+///
+/// A root that the corpus never declares simply never appears, so this costs
+/// nothing for someone whose rules have no `grocery` at all.
+pub const PRIMARY_ROOT: &str = "grocery";
+
 // ---------------------------------------------------------------------------
 // The budget target's root
 //
@@ -311,7 +322,12 @@ pub const UNCATEGORIZED_ROOT: &str = "uncategorized";
 /// Fallback when nothing is stored and nothing better is declared — the app's
 /// most common use case names it directly rather than falling back to an
 /// arbitrary first tag.
-pub const FALLBACK_BUDGET_ROOT: &str = "grocery";
+///
+/// The same root [`PRIMARY_ROOT`] names, and deliberately defined in terms of
+/// it rather than repeating the string: they are the same claim about what this
+/// app is for. Kept under its old name because `beanbeaver-android` still calls
+/// `spend_fallback_budget_root` from its budget screen.
+pub const FALLBACK_BUDGET_ROOT: &str = PRIMARY_ROOT;
 
 /// Root tags the current rule corpus actually declares: first path segment only,
 /// in the order the corpus returns them, de-duplicated. What the root picker
@@ -725,6 +741,13 @@ pub fn month(id: &str, records: &[SpendInput]) -> Month {
         })
         .collect();
     sort_desc_by_amount(&mut roots, |r| r.amount);
+    // …then lift the headline category over the sort. Stable in the sense that
+    // matters: everything else keeps its largest-first order, only `grocery`
+    // jumps, and only when the month actually has some.
+    if let Some(index) = roots.iter().position(|r| r.id == PRIMARY_ROOT) {
+        let primary = roots.remove(index);
+        roots.insert(0, primary);
+    }
 
     let tracked = items_total + tax;
     let max_leaf_amount = roots

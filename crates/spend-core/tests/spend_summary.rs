@@ -212,6 +212,40 @@ fn a_gap_against_the_receipt_total_is_reported_as_unaccounted() {
 }
 
 #[test]
+fn the_primary_root_leads_even_when_it_is_not_the_largest() {
+    // Household is more than double grocery here, and grocery still leads: this
+    // is a grocery tracker, and one furniture run should not bury the thing the
+    // user opened the app to see. Everything after it stays largest-first.
+    let records = vec![record("r1")
+        .items(vec![
+            item("MILK", "5.00", vec![grocery(), dairy()]),
+            item("PAPER TOWELS", "40.00", vec![household(), supply()]),
+            item("SHIRT", "12.00", vec![tag("shopping", "Shopping")]),
+        ])
+        .build()];
+    let m = month("2026-07", &records);
+    assert_eq!(
+        vec!["grocery", "household", "shopping"],
+        m.roots.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_month_with_no_primary_root_is_ordered_purely_by_amount() {
+    let records = vec![record("r1")
+        .items(vec![
+            item("SHIRT", "12.00", vec![tag("shopping", "Shopping")]),
+            item("PAPER TOWELS", "40.00", vec![household(), supply()]),
+        ])
+        .build()];
+    let m = month("2026-07", &records);
+    assert_eq!(
+        vec!["household", "shopping"],
+        m.roots.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn roots_and_leaves_are_ordered_largest_first() {
     let records = vec![record("r1")
         .items(vec![
@@ -226,8 +260,11 @@ fn roots_and_leaves_are_ordered_largest_first() {
         ])
         .build()];
     let m = month("2026-07", &records);
+    // Grocery leads by the rule above, not by amount — household is larger.
+    // What this test is about is everything *else* keeping its order, and the
+    // leaves inside a group sorting largest-first regardless.
     assert_eq!(
-        vec!["household", "grocery"],
+        vec!["grocery", "household"],
         m.roots.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
     );
     let leaves = &m.group("grocery").expect("grocery group").leaves;

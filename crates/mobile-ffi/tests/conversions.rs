@@ -81,9 +81,10 @@ fn month_fields_survive_the_round_trip_unswapped() {
     assert_eq!(vec!["r1".to_string()], m.record_ids);
     assert_eq!(15.0, m.max_leaf_amount);
 
-    // Roots largest first, and the leaf nesting survives.
+    // Grocery leads because it is the primary root, not because it is largest
+    // (household is), and the leaf nesting survives the crossing.
     let ids: Vec<&str> = m.roots.iter().map(|r| r.id.as_str()).collect();
-    assert_eq!(vec!["household", "grocery"], ids);
+    assert_eq!(vec!["grocery", "household"], ids);
     let grocery = m.roots.iter().find(|r| r.id == "grocery").expect("grocery");
     assert_eq!("Grocery", grocery.label);
     assert_eq!(10.0, grocery.amount);
