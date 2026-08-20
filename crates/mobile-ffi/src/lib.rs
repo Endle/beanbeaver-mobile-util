@@ -177,6 +177,30 @@ pub struct SpendReceiptGroup {
     pub receipt_total: Option<f64>,
 }
 
+/// Which day of the week a week starts on.
+///
+/// **A name, not a number, on purpose.** This crossed the seam as
+/// `1 = Sunday … 7 = Saturday` (ICU's numbering, what
+/// `Calendar.current.firstWeekday` returns) until a doc comment was the only
+/// thing standing between that and Kotlin's `DayOfWeek`, which numbers
+/// `MONDAY = 1`. Both conventions compile and passing the wrong one is silent:
+/// nothing errors, the chart still draws, the two apps just bucket the same
+/// receipts into different weeks.
+///
+/// Each app converts from its own named type at its own edge. UniFFI generates
+/// a Swift and a Kotlin enum, so neither conversion can be off by one without
+/// naming a day it did not mean.
+#[derive(uniffi::Enum)]
+pub enum SpendWeekday {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+}
+
 /// A half-open span of days, `[start, end)` — a receipt dated `end` belongs to
 /// the next span.
 #[derive(uniffi::Record)]
@@ -350,6 +374,20 @@ impl From<core::ReceiptGroup> for SpendReceiptGroup {
     }
 }
 
+impl From<SpendWeekday> for core::Weekday {
+    fn from(v: SpendWeekday) -> Self {
+        match v {
+            SpendWeekday::Sunday => core::Weekday::Sunday,
+            SpendWeekday::Monday => core::Weekday::Monday,
+            SpendWeekday::Tuesday => core::Weekday::Tuesday,
+            SpendWeekday::Wednesday => core::Weekday::Wednesday,
+            SpendWeekday::Thursday => core::Weekday::Thursday,
+            SpendWeekday::Friday => core::Weekday::Friday,
+            SpendWeekday::Saturday => core::Weekday::Saturday,
+        }
+    }
+}
+
 impl From<core::DateRange> for SpendDateRange {
     fn from(v: core::DateRange) -> Self {
         SpendDateRange {
@@ -504,11 +542,10 @@ pub fn spend_resolve_budget_root(stored: Option<String>, declared: Vec<String>) 
 /// with `SpendMonth::tracked`, the headline the home chart sits under. A
 /// category scope is items alone, because tax is not attributable to one.
 ///
-/// `first_weekday` is `1 = Sunday … 7 = Saturday` — ICU's numbering, which
-/// `Calendar.current.firstWeekday` gives directly. **Kotlin's
-/// `WeekFields.firstDayOfWeek` is a `DayOfWeek` (`MONDAY = 1 … SUNDAY = 7`) and
-/// must be converted**, or the two apps draw the same receipts in different
-/// weeks. Out-of-range values fall back to Sunday.
+/// `first_weekday` is a [`SpendWeekday`]. Swift maps
+/// `Calendar.current.firstWeekday` onto it, Kotlin maps
+/// `WeekFields.firstDayOfWeek`; each conversion is a switch over seven named
+/// cases, so neither can silently disagree with the other about a number.
 ///
 /// One call rather than four: both apps rebuild the summary on every render and
 /// cross this seam with the whole record list each time, so the number of
@@ -518,7 +555,7 @@ pub fn spend_trend(
     records: Vec<SpendInput>,
     scope: Option<SpendCategory>,
     today: SpendDate,
-    first_weekday: u32,
+    first_weekday: SpendWeekday,
     weeks: u32,
     rolling_days: u32,
 ) -> SpendTrend {
@@ -527,7 +564,7 @@ pub fn spend_trend(
         &to_core_records(records),
         scope.as_ref(),
         today.into(),
-        first_weekday,
+        first_weekday.into(),
         weeks,
         rolling_days,
     )

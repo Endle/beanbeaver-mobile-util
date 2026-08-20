@@ -9,6 +9,7 @@
 
 use spend_core::{
     bucketed, record_date, trend, Category, DateRange, ItemTag, SpendDate, SpendInput, SpendItem,
+    Weekday,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,8 +63,8 @@ fn range(from: SpendDate, to: SpendDate) -> DateRange {
     }
 }
 
-const SUNDAY: u32 = 1;
-const MONDAY: u32 = 2;
+const SUNDAY: Weekday = Weekday::Sunday;
+const MONDAY: Weekday = Weekday::Monday;
 
 fn amounts(t: &spend_core::Trend) -> Vec<f64> {
     t.points.iter().map(|p| p.amount).collect()
@@ -249,6 +250,29 @@ fn the_first_weekday_moves_the_boundary() {
 }
 
 #[test]
+fn every_first_weekday_lands_on_its_own_day() {
+    // The whole reason `Weekday` is a name and not a number: all seven have to
+    // be distinguishable, and each has to start the week on itself. Today is
+    // Wednesday 2026-03-04, so four of these reach back into February.
+    let cases = [
+        (Weekday::Sunday, day(2026, 3, 1)),
+        (Weekday::Monday, day(2026, 3, 2)),
+        (Weekday::Tuesday, day(2026, 3, 3)),
+        (Weekday::Wednesday, day(2026, 3, 4)),
+        (Weekday::Thursday, day(2026, 2, 26)),
+        (Weekday::Friday, day(2026, 2, 27)),
+        (Weekday::Saturday, day(2026, 2, 28)),
+    ];
+    for (first, expected) in cases {
+        let t = trend(&[], None, day(2026, 3, 4), first, 1, 30);
+        assert_eq!(
+            t.points[0].range.start, expected,
+            "week starting {first:?} should begin {expected:?}"
+        );
+    }
+}
+
+#[test]
 fn today_on_the_first_weekday_starts_a_fresh_week() {
     // 2026-03-01 is a Sunday, so with Sunday-start weeks it is day one of the
     // newest bucket, not the last day of the previous one.
@@ -293,13 +317,6 @@ fn weeks_cross_a_leap_day() {
     assert_eq!(t.points[0].range.start, day(2024, 2, 18));
     assert_eq!(t.points[1].range.start, day(2024, 2, 25));
     assert_eq!(t.points[1].range.end, day(2024, 3, 3));
-}
-
-#[test]
-fn an_out_of_range_first_weekday_falls_back_to_sunday() {
-    let fallback = trend(&[], None, day(2026, 3, 4), 0, 1, 30);
-    let sunday = trend(&[], None, day(2026, 3, 4), SUNDAY, 1, 30);
-    assert_eq!(fallback.points[0].range, sunday.points[0].range);
 }
 
 // ---------------------------------------------------------------------------

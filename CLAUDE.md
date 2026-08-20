@@ -124,13 +124,19 @@ output means no change is needed.
 built by `cargo test` / `cargo build` here. The distinction matters: a change to `spend-core` is proven in this repo,
 while a change to `src/bin/*.rs` can only be proven in an app.
 
-**`spend_trend`'s `first_weekday` uses ICU numbering — `1 = Sunday … 7 =
-Saturday`.** That is what `Calendar.current.firstWeekday` returns directly, so
-iOS passes it through. **Kotlin's `WeekFields.firstDayOfWeek` is a `DayOfWeek`,
-where `MONDAY = 1` and `SUNDAY = 7`, and must be converted.** Passing it raw is
-silent: nothing errors, the chart still draws, and the two apps simply bucket
-the same receipts into different weeks. `the_first_weekday_moves_the_boundary`
-in `spend-core`'s tests is the assertion that pins the convention.
+**`spend_trend`'s `first_weekday` is a `SpendWeekday` enum, and that is the
+point.** It was a `u32` in ICU numbering (`1 = Sunday`), one doc comment away
+from Kotlin's `DayOfWeek` (`MONDAY = 1`). Both conventions compile and the wrong
+one is **silent** — nothing errors, the chart still draws, the two apps just
+bucket the same receipts into different weeks. A name has no convention to get
+wrong and no out-of-range value to define a fallback for, so each app converts
+from its own named type at its own edge (`Calendar.current.firstWeekday` /
+`WeekFields.firstDayOfWeek`) with an exhaustive switch.
+
+This is the general rule worth copying: **anything crossing the seam whose
+meaning depends on a convention gets a name, not an integer.** The FFI is where
+two languages' assumptions meet, and a comment is not a type.
+`every_first_weekday_lands_on_its_own_day` pins all seven.
 
 This makes the repo root a **workspace root nested inside each app's package
 directory** (`beanbeaver-android/shared/Cargo.toml`). That is fine — cargo does
