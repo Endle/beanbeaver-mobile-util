@@ -804,9 +804,49 @@ fn civil_from_days(days: i64) -> SpendDate {
     }
 }
 
-/// Day of the week as 0 = Sunday … 6 = Saturday.
+/// A day of the week, named.
 ///
-/// 1970-01-01 was a Thursday, so day 0 maps to 4.
+/// **Named rather than an integer on purpose.** This used to cross the FFI as
+/// `1 = Sunday … 7 = Saturday` (ICU's numbering, which
+/// `Calendar.current.firstWeekday` returns directly), with a doc comment warning
+/// that Kotlin's `WeekFields.firstDayOfWeek` is a `DayOfWeek` numbered
+/// `MONDAY = 1`. That is a footgun a comment cannot close: both conventions are
+/// plausible, both compile, and passing the wrong one is **silent** — nothing
+/// errors, the chart still draws, and the two apps simply bucket the same
+/// receipts into different weeks.
+///
+/// With a name there is no convention to get wrong, and no out-of-range value
+/// to define a fallback for. Each platform converts from its own named type at
+/// its own edge, where a `switch` over seven cases is exhaustive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weekday {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+}
+
+impl Weekday {
+    /// Sunday-relative index, which is the frame [`weekday`] counts in.
+    fn index(self) -> i64 {
+        match self {
+            Weekday::Sunday => 0,
+            Weekday::Monday => 1,
+            Weekday::Tuesday => 2,
+            Weekday::Wednesday => 3,
+            Weekday::Thursday => 4,
+            Weekday::Friday => 5,
+            Weekday::Saturday => 6,
+        }
+    }
+}
+
+/// Which day of the week `date` falls on.
+///
+/// 1970-01-01 was a Thursday, so day 0 maps to index 4.
 fn weekday(date: SpendDate) -> i64 {
     let days = days_from_civil(date);
     ((days + 4) % 7 + 7) % 7
@@ -957,28 +997,20 @@ pub fn bucketed(
 /// The `weeks` most recent weeks ending with the one containing `today`, oldest
 /// first, plus the trailing `rolling_days` window.
 ///
-/// `first_weekday` is `1 = Sunday … 7 = Saturday` — ICU's numbering, which is
-/// what `Calendar.current.firstWeekday` gives directly. **Kotlin's
-/// `WeekFields.firstDayOfWeek` is a `DayOfWeek` (`MONDAY = 1 … SUNDAY = 7`) and
-/// must be converted**, or the two apps will draw the same receipts in
-/// different weeks. Out-of-range values fall back to Sunday.
-///
-/// The caller supplies the week start rather than this crate assuming one, for
-/// the same reason it supplies "today": it is a locale fact the platform
-/// already knows and this crate has no way to look up.
+/// The caller supplies `first_weekday` rather than this crate assuming one, for
+/// the same reason it supplies "today": it is a locale fact the platform already
+/// knows (`Calendar.current.firstWeekday` / `WeekFields.firstDayOfWeek`) and this
+/// crate has no way to look up. It is a [`Weekday`] rather than a number so the
+/// two platforms cannot disagree about what the number meant.
 pub fn trend(
     records: &[SpendInput],
     scope: Option<&Category>,
     today: SpendDate,
-    first_weekday: u32,
+    first_weekday: Weekday,
     weeks: u32,
     rolling_days: u32,
 ) -> Trend {
-    let first = if (1..=7).contains(&first_weekday) {
-        first_weekday as i64 - 1
-    } else {
-        0
-    };
+    let first = first_weekday.index();
     let today_days = days_from_civil(today);
     let this_week_start = today_days - ((weekday(today) - first) % 7 + 7) % 7;
 

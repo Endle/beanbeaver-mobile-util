@@ -11,7 +11,7 @@
 use bb_mobile_ffi::{
     spend_declared_roots, spend_items, spend_month, spend_month_id, spend_receipt_groups,
     spend_resolve_budget_root, spend_trend, SpendCategory, SpendDate, SpendInput, SpendItem,
-    SpendTag,
+    SpendTag, SpendWeekday,
 };
 
 fn tag(path: &str, display: &str) -> SpendTag {
@@ -188,7 +188,7 @@ fn the_trend_crosses_the_seam_with_its_ranges_intact() {
         month: 3,
         day: 4,
     };
-    let trend = spend_trend(records, None, today, 1, 6, 30);
+    let trend = spend_trend(records, None, today, SpendWeekday::Sunday, 6, 30);
 
     assert_eq!(6, trend.points.len());
     let newest = trend.points.last().expect("six weeks");
@@ -237,10 +237,17 @@ fn a_scope_crosses_the_seam_as_the_category_it_names() {
         month: today.month,
         day: today.day,
     };
-    let trend = spend_trend(records.clone_all(), Some(scope), today, 1, 6, 30);
+    let trend = spend_trend(
+        records.clone_all(),
+        Some(scope),
+        today,
+        SpendWeekday::Sunday,
+        6,
+        30,
+    );
     assert_eq!(20.00, trend.rolling);
 
-    let unscoped = spend_trend(records, None, later, 1, 6, 30);
+    let unscoped = spend_trend(records, None, later, SpendWeekday::Sunday, 6, 30);
     assert_eq!(30.00, unscoped.rolling);
 }
 
