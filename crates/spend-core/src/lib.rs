@@ -1104,3 +1104,144 @@ pub fn trend(
         rolling_range,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Month facts
+//
+// "What is this month costing per day, and what had the same stretch of last
+// month come to?" — the two figures under the home slip's total, and the window
+// its eyebrow names.
+//
+// Separate from [`month`] on purpose. That function is pure over records: no
+// clock, so a test states a month's arithmetic without stating a date, and two
+// runs a day apart agree. Everything below *depends* on today, and folding a
+// today-dependent field into `Month` would quietly take that property away from
+// every caller that doesn't want it.
+// ---------------------------------------------------------------------------
+
+/// The first day of the month `id` names, and of the months either side of it.
+///
+/// Month length is `days_from_civil(next) - days_from_civil(first)` rather than
+/// a table plus a leap rule — the calendar knowledge already lives in that one
+/// function, and a second copy of "how long is February" is a second thing that
+/// can be wrong.
+fn month_bounds(year: i32, month: u32) -> (SpendDate, SpendDate, SpendDate) {
+    let first = SpendDate::new(year, month, 1);
+    let next = if month == 12 {
+        SpendDate::new(year + 1, 1, 1)
+    } else {
+        SpendDate::new(year, month + 1, 1)
+    };
+    let previous = if month == 1 {
+        SpendDate::new(year - 1, 12, 1)
+    } else {
+        SpendDate::new(year, month - 1, 1)
+    };
+    (previous, first, next)
+}
+
+/// A month's clock-relative figures: what it averages per day, and what the
+/// same stretch of the month before actually came to.
+///
+/// # Both windows travel with the figures
+///
+/// A view has to *name* these ("Aug 1–21", "Jul 1–21 $3026.45"), and the
+/// alternative is each platform re-deriving a month boundary from a month id in
+/// its own date library — which is the class of thing this crate exists to stop
+/// happening twice. Formatting the two ranges stays the platform's job; deciding
+/// where they start and end does not.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonthFacts {
+    /// What the month's total covers: the 1st through today inclusive while the
+    /// month is in progress, the whole month once it is over. A month entirely
+    /// in the future gets the whole month too — nothing has elapsed, so there is
+    /// no partial window to speak of.
+    pub window: DateRange,
+    /// Days in `window`, and the divisor behind `daily_average`.
+    pub days: u32,
+    /// [`Month::tracked`] over `days`.
+    ///
+    /// **The numerator is the month's whole tracked total, not the sum over
+    /// `window`.** The two differ only for a receipt dated later this month than
+    /// today — a mis-read date, usually — and when they differ, this is the one
+    /// that reconciles with the figure printed directly above it. An average
+    /// that quietly dropped a receipt the total includes would make
+    /// `average × days ≠ total` for anyone who checked.
+    pub daily_average: f64,
+    /// `window` shifted back one month, clamped to that month's own length: a
+    /// 31-day window asks February for its 28, rather than spilling into March.
+    pub previous_window: DateRange,
+    /// What `previous_window` came to. **Actual, never a projection** — a
+    /// "on pace for" figure was tried on the home slip and cut, because it is
+    /// the only number there that isn't measured and it swings wildly in the
+    /// first days of a month.
+    pub previous_total: f64,
+}
+
+/// [`MonthFacts`] for the month `id` names.
+///
+/// `id` that isn't a month id yields zeros over an empty window at `today`,
+/// matching [`month_label`]'s habit of degrading quietly rather than panicking
+/// on an id no caller should have produced.
+///
+/// Calls [`month`] for the numerator rather than re-summing items and tax here:
+/// one extra pass over the records, against a second definition of "tracked"
+/// that could drift from the first. Both apps already cross the FFI with the
+/// whole record list per render, so the pass is not what costs.
+pub fn month_facts(id: &str, records: &[SpendInput], today: SpendDate) -> MonthFacts {
+    // Bound as `month_number`, not `month`: the local would shadow the `month`
+    // function this needs to call.
+    let Some((year, month_number)) = parse_month_id(id) else {
+        let empty = DateRange {
+            start: today,
+            end: today,
+        };
+        return MonthFacts {
+            window: empty,
+            days: 0,
+            daily_average: 0.0,
+            previous_window: empty,
+            previous_total: 0.0,
+        };
+    };
+
+    let (previous_start, start, next) = month_bounds(year, month_number);
+    let start_days = days_from_civil(start);
+    let next_days = days_from_civil(next);
+    let today_days = days_from_civil(today);
+
+    // In progress → through today inclusive. Over, or not yet begun → the whole
+    // month.
+    let end_days = if (start_days..next_days).contains(&today_days) {
+        today_days + 1
+    } else {
+        next_days
+    };
+    let window = DateRange {
+        start,
+        end: civil_from_days(end_days),
+    };
+    let days = (end_days - start_days) as u32;
+
+    let previous_start_days = days_from_civil(previous_start);
+    let previous_length = start_days - previous_start_days;
+    let previous_window = DateRange {
+        start: previous_start,
+        end: civil_from_days(previous_start_days + i64::from(days).min(previous_length)),
+    };
+
+    let tracked = month(id, records).tracked;
+    let previous_total = bucketed(records, None, &[previous_window])[0];
+
+    MonthFacts {
+        window,
+        days,
+        daily_average: if days == 0 {
+            0.0
+        } else {
+            round_cents(tracked / f64::from(days))
+        },
+        previous_window,
+        previous_total,
+    }
+}

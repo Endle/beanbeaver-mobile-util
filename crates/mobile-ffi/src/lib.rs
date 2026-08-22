@@ -250,6 +250,33 @@ pub struct SpendTrend {
     pub rolling_range: SpendDateRange,
 }
 
+/// A month's two clock-relative figures, and the windows they cover — what the
+/// home slip prints under the total.
+///
+/// Separate from [`SpendMonth`] on purpose: `spend_month` is pure over records
+/// and takes no date, and folding a today-dependent field into it would take
+/// that property away from every caller that doesn't want it. The cost is one
+/// more crossing per render on the home screen, which is the screen already
+/// making two.
+#[derive(uniffi::Record)]
+pub struct SpendMonthFacts {
+    /// What the total covers: the 1st through today inclusive while the month
+    /// is in progress, the whole month once it is over.
+    pub window: SpendDateRange,
+    /// Days in `window` — the divisor behind `daily_average`.
+    pub days: u32,
+    /// The month's tracked total over `days`.
+    ///
+    /// The numerator is the whole tracked total, not the sum over `window`, so
+    /// `daily_average × days` reconciles with the figure printed above it.
+    pub daily_average: f64,
+    /// `window` shifted back a month, clamped to that month's own length — a
+    /// 31-day window asks February for its 28 rather than spilling into March.
+    pub previous_window: SpendDateRange,
+    /// What `previous_window` came to. **Actual, never a projection.**
+    pub previous_total: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Conversions
 //
@@ -431,6 +458,18 @@ impl From<core::Trend> for SpendTrend {
     }
 }
 
+impl From<core::MonthFacts> for SpendMonthFacts {
+    fn from(v: core::MonthFacts) -> Self {
+        SpendMonthFacts {
+            window: v.window.into(),
+            days: v.days,
+            daily_average: v.daily_average,
+            previous_window: v.previous_window.into(),
+            previous_total: v.previous_total,
+        }
+    }
+}
+
 fn to_core_records(records: Vec<SpendInput>) -> Vec<core::SpendInput> {
     records.into_iter().map(Into::into).collect()
 }
@@ -569,6 +608,22 @@ pub fn spend_trend(
         rolling_days,
     )
     .into()
+}
+
+/// The daily average and the previous-month-to-date figure for `id`.
+///
+/// Takes `today` for the same reason [`spend_trend`] does: this crate has no
+/// clock, and resolving an instant to a local calendar date needs a timezone
+/// database and the offset in force at that instant, which the platform already
+/// has. Both windows come back so the view can *name* them ("Aug 1–21",
+/// "Jul 1–21") without re-deriving a month boundary in its own date library.
+#[uniffi::export]
+pub fn spend_month_facts(
+    id: String,
+    records: Vec<SpendInput>,
+    today: SpendDate,
+) -> SpendMonthFacts {
+    core::month_facts(&id, &to_core_records(records), today.into()).into()
 }
 
 /// Sentinel root for items the classifier left untagged, exposed so a caller can
