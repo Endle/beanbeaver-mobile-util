@@ -138,6 +138,18 @@ meaning depends on a convention gets a name, not an integer.** The FFI is where
 two languages' assumptions meet, and a comment is not a type.
 `every_first_weekday_lands_on_its_own_day` pins all seven.
 
+**`spend_month` takes no date, and `spend_month_facts` is separate for that
+reason.** `month()` is pure over records: a test states a month's arithmetic
+without stating a day, and two runs a day apart agree. The home slip also needs
+two figures that *are* clock-relative — the daily average and what the same
+stretch of last month came to — and the tempting move is to add them as fields
+on `Month` and give it a `today` parameter. Don't: that makes every existing
+caller pass a date it has no use for, and makes every `month()` test
+time-dependent to buy one screen a saved FFI crossing. They live in
+`month_facts(id, records, today)` instead, which returns both **windows**
+alongside both figures so a view can name them ("Aug 1–21", "Jul 1–21") without
+re-deriving a month boundary in Foundation or `java.time`.
+
 This makes the repo root a **workspace root nested inside each app's package
 directory** (`beanbeaver-android/shared/Cargo.toml`). That is fine — cargo does
 not scan subdirectories for packages, so the app's build never sees it.
