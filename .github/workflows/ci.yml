@@ -2,8 +2,8 @@ name: CI
 
 # Three jobs, split by how much they cost.
 #
-# `crates` is spend-core alone: zero dependencies, so it needs no cache and
-# finishes in seconds. Keeping it separate means a typo there fails fast instead
+# `crates` covers spend-core and price-history: zero dependencies, so it needs
+# no cache and finishes in seconds. Keeping it separate means a typo fails fast instead
 # of queueing behind an ONNX Runtime download.
 #
 # `ffi` builds bb-mobile-ffi, which pulls in bb-receipt-ffi and therefore
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   crates:
-    name: spend-core (test + clippy + fmt)
+    name: shared logic (test + clippy + fmt)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -47,10 +47,10 @@ jobs:
       # and `clippy::all = "warn"`, and a warning nobody fails on is a warning
       # nobody reads.
       - name: Clippy
-        run: cargo clippy -p spend-core --all-targets -- -D warnings
+        run: cargo clippy -p spend-core -p price-history --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test -p spend-core
+        run: cargo test -p spend-core -p price-history
 
   ffi:
     name: mobile-ffi (build + both namespaces)

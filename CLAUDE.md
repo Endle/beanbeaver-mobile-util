@@ -73,6 +73,7 @@ side, not host Rust, which skips the real serialization.
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point (library mode) | Compiled *into* each app's build-only crate via `[[bin]] path = "shared/src/bin/…"`. |
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device `BatchRunner` | Same. Produces the `batch_out.json` that `compare-e2e.py` grades. |
 | `crates/spend-core/` | **Phase 2a.** The spend/budget arithmetic — a real cargo crate, unlike the two bins above. Zero dependencies, `cargo test` anywhere. |
+| `crates/price-history/` | Tuple-based purchase history, explicit product links and conservative price comparisons. Zero dependencies; no storage, OCR or bindings. See its README for the projection and approval contract. |
 | `crates/mobile-ffi/` | **Phase 2b.** The UniFFI seam over `spend-core`, and **the single library both apps link** — it carries two namespaces. See below. |
 
 **`models/` is deliberately not here.** The weights are large binaries and the
@@ -120,7 +121,7 @@ output means no change is needed.
 
 ### The crates, which *are* a workspace
 
-`crates/spend-core` and `crates/mobile-ffi` are ordinary workspace members,
+`crates/spend-core`, `crates/price-history` and `crates/mobile-ffi` are ordinary workspace members,
 built by `cargo test` / `cargo build` here. The distinction matters: a change to `spend-core` is proven in this repo,
 while a change to `src/bin/*.rs` can only be proven in an app.
 
