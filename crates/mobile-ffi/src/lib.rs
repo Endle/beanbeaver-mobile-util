@@ -1,5 +1,5 @@
-//! The UniFFI seam over [`spend_core`], and the single library both phone apps
-//! link.
+//! The UniFFI seam over [`spend_core`] and [`price_history`], and the single
+//! library both phone apps link.
 //!
 //! # This library carries two namespaces
 //!
@@ -45,6 +45,7 @@
 // namespace silently vanishes from the built library.
 use bb_receipt_ffi as _;
 
+use price_history as history;
 use spend_core as core;
 
 uniffi::setup_scaffolding!();
@@ -278,6 +279,160 @@ pub struct SpendMonthFacts {
 }
 
 // ---------------------------------------------------------------------------
+// Price history — inputs
+//
+// A projection of its own rather than more fields on `SpendInput`: the spend
+// screens cross this seam on every render, and every one of them would pay for
+// fields only the Items screen reads. An added record field is also a break at
+// every Swift constructor; a new record breaks nothing.
+// ---------------------------------------------------------------------------
+
+/// One receipt, projected for [`spend_price_history`].
+#[derive(uniffi::Record)]
+pub struct SpendHistoryReceipt {
+    pub id: String,
+    /// `result.merchant`.
+    pub merchant: String,
+    /// `result.merchantMatch.canonical`.
+    pub merchant_family: Option<String>,
+    pub date_iso: Option<String>,
+    pub date_is_placeholder: bool,
+    pub items: Vec<SpendHistoryItem>,
+}
+
+/// One printed line, projected for [`spend_price_history`].
+#[derive(uniffi::Record)]
+pub struct SpendHistoryItem {
+    pub description: String,
+    /// `item.itemNumber`.
+    pub item_number: Option<String>,
+    pub price: String,
+    pub quantity: i32,
+    pub tags: Vec<SpendTag>,
+    /// `item.giftCard != nil`.
+    pub is_gift_card: bool,
+}
+
+/// What an item key's `value` is.
+#[derive(uniffi::Enum)]
+pub enum SpendItemKeyKind {
+    /// A printed product code.
+    Code,
+    /// A cleaned, uppercased description.
+    Name,
+}
+
+/// One item at one merchant. Three strings, so an app can persist it as it is
+/// and hand it back inside a [`SpendProductLink`].
+#[derive(uniffi::Record)]
+pub struct SpendItemKey {
+    pub merchant: String,
+    pub kind: SpendItemKeyKind,
+    pub value: String,
+}
+
+/// The user's decision that items are one product. The app stores these;
+/// passing a different list is how a merge, a split or a rename happens.
+#[derive(uniffi::Record)]
+pub struct SpendProductLink {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<SpendItemKey>,
+}
+
+// ---------------------------------------------------------------------------
+// Price history — outputs
+//
+// Money crosses as dollars in an `f64`, like every other figure here, so the
+// apps format it with the formatter they already use. It is exact cents on the
+// Rust side; dividing by 100 is the only step.
+// ---------------------------------------------------------------------------
+
+/// What a history is keyed by.
+#[derive(uniffi::Enum)]
+pub enum SpendHistoryKey {
+    Item {
+        key: SpendItemKey,
+    },
+    /// A [`SpendProductLink::id`].
+    Product {
+        id: String,
+    },
+}
+
+/// Where a purchase's unit count came from.
+#[derive(uniffi::Enum)]
+pub enum SpendUnitsBasis {
+    /// Nothing said otherwise.
+    Assumed,
+    /// The parser recorded a quantity above one.
+    Recorded,
+    /// The amount is an exact multiple of another price paid for it here —
+    /// a reading, so show it as one ("2 × $6.49").
+    Inferred,
+}
+
+/// Whether one merchant's prices for an item are a price at all.
+#[derive(uniffi::Enum)]
+pub enum SpendPricing {
+    /// At most one readable price.
+    Single,
+    /// Prices repeat; a change between purchases is a real price change.
+    Steady,
+    /// Prices don't repeat (weighed, or a department line). Show what was paid;
+    /// draw no trend and claim no change.
+    Varies,
+}
+
+/// One printed line that bought something.
+#[derive(uniffi::Record)]
+pub struct SpendPurchase {
+    pub receipt_id: String,
+    pub item_index: u32,
+    pub merchant: String,
+    /// As printed, deal text and all.
+    pub description: String,
+    /// `None` when the receipt's date is missing or a placeholder — never the
+    /// scan date.
+    pub date: Option<SpendDate>,
+    /// `None` when the price could not be read.
+    pub amount: Option<f64>,
+    pub units: u32,
+    pub basis: SpendUnitsBasis,
+    pub unit_price: Option<f64>,
+}
+
+/// One merchant's figures for an item. Never mixed across merchants.
+#[derive(uniffi::Record)]
+pub struct SpendMerchantPrices {
+    pub merchant: String,
+    pub purchase_count: u32,
+    pub pricing: SpendPricing,
+    pub latest: Option<SpendPurchase>,
+    /// Unit prices.
+    pub lowest: Option<f64>,
+    pub highest: Option<f64>,
+    pub typical: Option<f64>,
+    pub average: Option<f64>,
+}
+
+/// Everything known about one item, or one linked product.
+#[derive(uniffi::Record)]
+pub struct SpendItemHistory {
+    pub key: SpendHistoryKey,
+    pub name: String,
+    /// The item keys with purchases here — what a merge or split works on.
+    pub members: Vec<SpendItemKey>,
+    /// Newest first; undated last.
+    pub purchases: Vec<SpendPurchase>,
+    /// The most recent dated purchase with a readable price, at any merchant.
+    pub latest: Option<SpendPurchase>,
+    pub receipt_count: u32,
+    /// Ordered by each merchant's newest purchase.
+    pub merchants: Vec<SpendMerchantPrices>,
+}
+
+// ---------------------------------------------------------------------------
 // Conversions
 //
 // Mechanical and compiler-checked. Inbound types convert into core's; outbound
@@ -470,6 +625,147 @@ impl From<core::MonthFacts> for SpendMonthFacts {
     }
 }
 
+impl From<SpendHistoryItem> for history::HistoryItem {
+    fn from(v: SpendHistoryItem) -> Self {
+        history::HistoryItem {
+            description: v.description,
+            item_number: v.item_number,
+            price: v.price,
+            quantity: v.quantity,
+            tags: v.tags.into_iter().map(Into::into).collect(),
+            is_gift_card: v.is_gift_card,
+        }
+    }
+}
+
+impl From<SpendHistoryReceipt> for history::HistoryReceipt {
+    fn from(v: SpendHistoryReceipt) -> Self {
+        history::HistoryReceipt {
+            id: v.id,
+            merchant: v.merchant,
+            merchant_family: v.merchant_family,
+            date_iso: v.date_iso,
+            date_is_placeholder: v.date_is_placeholder,
+            items: v.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<SpendItemKey> for history::ItemKey {
+    fn from(v: SpendItemKey) -> Self {
+        history::ItemKey {
+            merchant: v.merchant,
+            identity: match v.kind {
+                SpendItemKeyKind::Code => history::Identity::Code(v.value),
+                SpendItemKeyKind::Name => history::Identity::Name(v.value),
+            },
+        }
+    }
+}
+
+impl From<history::ItemKey> for SpendItemKey {
+    fn from(v: history::ItemKey) -> Self {
+        let (kind, value) = match v.identity {
+            history::Identity::Code(code) => (SpendItemKeyKind::Code, code),
+            history::Identity::Name(name) => (SpendItemKeyKind::Name, name),
+        };
+        SpendItemKey {
+            merchant: v.merchant,
+            kind,
+            value,
+        }
+    }
+}
+
+impl From<SpendProductLink> for history::ProductLink {
+    fn from(v: SpendProductLink) -> Self {
+        history::ProductLink {
+            id: v.id,
+            name: v.name,
+            members: v.members.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<history::HistoryKey> for SpendHistoryKey {
+    fn from(v: history::HistoryKey) -> Self {
+        match v {
+            history::HistoryKey::Item(key) => SpendHistoryKey::Item { key: key.into() },
+            history::HistoryKey::Product(id) => SpendHistoryKey::Product { id },
+        }
+    }
+}
+
+impl From<history::UnitsBasis> for SpendUnitsBasis {
+    fn from(v: history::UnitsBasis) -> Self {
+        match v {
+            history::UnitsBasis::Assumed => SpendUnitsBasis::Assumed,
+            history::UnitsBasis::Recorded => SpendUnitsBasis::Recorded,
+            history::UnitsBasis::Inferred => SpendUnitsBasis::Inferred,
+        }
+    }
+}
+
+impl From<history::Pricing> for SpendPricing {
+    fn from(v: history::Pricing) -> Self {
+        match v {
+            history::Pricing::Single => SpendPricing::Single,
+            history::Pricing::Steady => SpendPricing::Steady,
+            history::Pricing::Varies => SpendPricing::Varies,
+        }
+    }
+}
+
+/// Cents to the dollars every other figure on this seam is in.
+fn dollars(cents: i64) -> f64 {
+    cents as f64 / 100.0
+}
+
+impl From<history::Purchase> for SpendPurchase {
+    fn from(v: history::Purchase) -> Self {
+        SpendPurchase {
+            receipt_id: v.receipt_id,
+            item_index: v.item_index,
+            merchant: v.merchant,
+            description: v.description,
+            date: v.date.map(Into::into),
+            amount: v.amount.map(dollars),
+            units: v.units,
+            basis: v.basis.into(),
+            unit_price: v.unit_price.map(dollars),
+        }
+    }
+}
+
+impl From<history::MerchantPrices> for SpendMerchantPrices {
+    fn from(v: history::MerchantPrices) -> Self {
+        SpendMerchantPrices {
+            merchant: v.merchant,
+            purchase_count: v.purchase_count,
+            pricing: v.pricing.into(),
+            latest: v.latest.map(Into::into),
+            lowest: v.lowest.map(dollars),
+            highest: v.highest.map(dollars),
+            typical: v.typical.map(dollars),
+            average: v.average.map(dollars),
+        }
+    }
+}
+
+impl From<history::ItemHistory> for SpendItemHistory {
+    fn from(v: history::ItemHistory) -> Self {
+        SpendItemHistory {
+            key: v.key.into(),
+            name: v.name,
+            members: v.members.into_iter().map(Into::into).collect(),
+            purchases: v.purchases.into_iter().map(Into::into).collect(),
+            latest: v.latest.map(Into::into),
+            receipt_count: v.receipt_count,
+            merchants: v.merchants.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 fn to_core_records(records: Vec<SpendInput>) -> Vec<core::SpendInput> {
     records.into_iter().map(Into::into).collect()
 }
@@ -637,4 +933,29 @@ pub fn spend_uncategorized_root() -> String {
 #[uniffi::export]
 pub fn spend_fallback_budget_root() -> String {
     core::FALLBACK_BUDGET_ROOT.to_string()
+}
+
+/// Every item bought across `receipts` whose history matches `query`, most
+/// recently bought first. An empty `query` is every item.
+///
+/// One call, query included, so a search box costs one crossing per keystroke
+/// rather than a build plus a filter. Cache the empty-query result per store
+/// revision, as the spend screens do: the Items list must not rebuild it per
+/// view-property access.
+///
+/// `links` are the user's merges and renames, as the app stored them. Nothing
+/// on this side remembers a previous call.
+#[uniffi::export]
+pub fn spend_price_history(
+    receipts: Vec<SpendHistoryReceipt>,
+    links: Vec<SpendProductLink>,
+    query: String,
+) -> Vec<SpendItemHistory> {
+    let receipts: Vec<history::HistoryReceipt> = receipts.into_iter().map(Into::into).collect();
+    let links: Vec<history::ProductLink> = links.into_iter().map(Into::into).collect();
+    history::price_history(&receipts, &links)
+        .into_iter()
+        .filter(|h| history::matches(h, &query))
+        .map(Into::into)
+        .collect()
 }

@@ -73,8 +73,8 @@ side, not host Rust, which skips the real serialization.
 | `src/bin/uniffi-bindgen.rs` | UniFFI codegen entry point (library mode) | Compiled *into* each app's build-only crate via `[[bin]] path = "shared/src/bin/…"`. |
 | `src/bin/batch_e2e.rs` | Host-side twin of the on-device `BatchRunner` | Same. Produces the `batch_out.json` that `compare-e2e.py` grades. |
 | `crates/spend-core/` | **Phase 2a.** The spend/budget arithmetic — a real cargo crate, unlike the two bins above. Zero dependencies, `cargo test` anywhere. |
-| `crates/price-history/` | Tuple-based purchase history, explicit product links and conservative price comparisons. Zero dependencies; no storage, OCR or bindings. See its README for the projection and approval contract. |
-| `crates/mobile-ffi/` | **Phase 2b.** The UniFFI seam over `spend-core`, and **the single library both apps link** — it carries two namespaces. See below. |
+| `crates/price-history/` | Per-item purchase history: identity by merchant + code or cleaned name, multi-buy inference, and `Pricing` (steady vs. varies). Depends only on `spend-core`, for its price and date readings. Its README says what a screen may claim from each field. |
+| `crates/mobile-ffi/` | **Phase 2b.** The UniFFI seam over `spend-core` and `price-history`, and **the single library both apps link** — it carries two namespaces. See below. |
 
 **`models/` is deliberately not here.** The weights are large binaries and the
 current arrangement works: iOS commits them, Android fetches them from the

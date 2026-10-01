@@ -1,428 +1,614 @@
-use price_history::*;
+//! The specification for [`price_history`]: which lines are one item, how many
+//! units each amount paid for, and when a price is steady enough to compare.
+//!
+//! Every name, code and price here is invented. The rules were measured on the
+//! private receipt corpus (see `Pricing`'s docs); its receipts stay private.
 
-fn key(merchant: &str, name: &str, code: Option<&str>) -> ItemKey {
-    ItemKey::new(merchant, name, code).unwrap()
-}
+use price_history::{
+    clean_name, matches, price_history, purchase_date, HistoryItem, HistoryKey, HistoryReceipt,
+    Identity, ItemHistory, ItemKey, ItemTag, Pricing, ProductLink, SpendDate, UnitsBasis,
+};
 
-fn observation(receipt: &str, item: &str, amount: i64) -> Observation {
-    Observation {
-        id: ObservationId {
-            receipt_id: receipt.into(),
-            item_id: item.into(),
-        },
-        item: key("Shop One", "Example Milk", Some("000042")),
-        observed_name: "Example Milk".into(),
-        display_name: None,
-        date: Some(PurchaseDate::new(2026, 1, 1).unwrap()),
-        amount_minor: Some(amount),
-        currency: Some("CAD".into()),
-        recorded_quantity: Some(1),
-        kind: LineKind::Product,
-        comparison: None,
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+fn item(description: &str, price: &str) -> HistoryItem {
+    HistoryItem {
+        description: description.into(),
+        item_number: None,
+        price: price.into(),
+        quantity: 1,
+        tags: vec![ItemTag::new("grocery", "Grocery")],
+        is_gift_card: false,
     }
 }
 
-fn approve(observation: &mut Observation, units: u32) {
-    observation.comparison = Some(ComparisonApproval {
-        units,
-        tax: TaxBasis::Excluded,
-        discounts: DiscountBasis::BeforeDiscounts,
-    });
-}
-
-fn link(aliases: Vec<ItemKey>) -> ProductLink {
-    ProductLink {
-        id: "milk".into(),
-        display_name: "My milk".into(),
-        aliases,
+fn coded(code: &str, description: &str, price: &str) -> HistoryItem {
+    HistoryItem {
+        item_number: Some(code.into()),
+        ..item(description, price)
     }
 }
 
-fn fraction(price: UnitPrice) -> (u64, u64) {
-    (price.numerator(), price.denominator())
-}
-
-#[test]
-fn normalization_is_conservative_and_missing_code_is_not_a_wildcard() {
-    let normalized = key("  SHOP\tONE ", "Example\n Milk", Some(" 000042 "));
-    assert_eq!(normalized, key("shop one", "example milk", Some("000042")));
-    assert_eq!(normalized.merchant(), "SHOP ONE");
-    assert_eq!(normalized.name(), "EXAMPLE MILK");
-    assert_eq!(normalized.code(), Some("000042"));
-    assert_eq!(key("S", "N", Some(" \t")), key("s", "n", None));
-    let mut rows = Vec::new();
-    for (index, item) in [
-        normalized,
-        key("shop one", "example milk", Some("000042")),
-        key("shop one", "example milk", None),
-        key("shop one", "example milk", Some("42")),
-        key("shop one", "example milk", Some("000043")),
-        key("shop two", "example milk", Some("000042")),
-        key("shop one", "example-milk", Some("000042")),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut row = observation(&index.to_string(), "line", 349);
-        row.item = item;
-        rows.push(row);
+fn receipt(id: &str, merchant: &str, iso: &str, items: Vec<HistoryItem>) -> HistoryReceipt {
+    HistoryReceipt {
+        id: id.into(),
+        merchant: merchant.into(),
+        merchant_family: None,
+        date_iso: Some(iso.into()),
+        date_is_placeholder: false,
+        items,
     }
-    let groups = build_history(&rows, &[]).unwrap();
-    assert_eq!(groups.len(), 6);
-    assert_eq!(groups.iter().map(|g| g.entries.len()).sum::<usize>(), 7);
-    assert_ne!(key("S", "N", Some("ab")), key("S", "N", Some("AB")));
-    assert_eq!(
-        ItemKey::new(" ", "milk", None),
-        Err(HistoryError::EmptyItemKey)
-    );
-    assert_eq!(
-        ItemKey::new("shop", "\n", None),
-        Err(HistoryError::EmptyItemKey)
-    );
 }
 
-#[test]
-fn repeated_lines_survive_and_exact_duplicate_ids_are_rejected() {
-    let a = observation("receipt1", "line1", 349);
-    let b = observation("receipt1", "line2", 349);
-    let c = observation("receipt2", "line1", 349);
-    let groups = build_history(&[a.clone(), b, c], &[]).unwrap();
-    assert_eq!(groups[0].entries.len(), 3);
-    assert_eq!(groups[0].receipt_count, 2);
-    assert_eq!(
-        build_history(&[a.clone(), a.clone()], &[]),
-        Err(HistoryError::DuplicateObservation(a.id.clone()))
-    );
-    let mut changed = a.clone();
-    changed.amount_minor = Some(400);
-    assert_eq!(
-        build_history(&[a.clone(), changed], &[]),
-        Err(HistoryError::DuplicateObservation(a.id))
-    );
-}
-
-#[test]
-fn explicit_aliases_link_stores_and_undo_without_rewriting_evidence() {
-    let mut a = observation("r1", "line1", 349);
-    let mut b = observation("r2", "line1", 399);
-    b.item = key("Shop Two", "EX MPL MLK", Some("888"));
-    b.observed_name = "EX MPL MLK".into();
-    b.display_name = Some("Breakfast milk".into());
-    approve(&mut a, 1);
-    approve(&mut b, 1);
-    let rows = vec![a.clone(), b.clone()];
-    let separate = build_history(&rows, &[]).unwrap();
-    assert_eq!(separate.len(), 2);
-    let unused_alias = key("Shop Three", "Old product name", None);
-    let product = link(vec![a.item.clone(), b.item.clone(), unused_alias]);
-    let joined = build_history(&rows, &[product]).unwrap();
-    assert_eq!(joined.len(), 1);
-    assert_eq!(joined[0].key, HistoryKey::Product("milk".into()));
-    assert_eq!(joined[0].display_name, "My milk");
-    assert_eq!(joined[0].entries[0].observation, a);
-    assert_eq!(joined[0].entries[1].observation, b);
-    assert_eq!(joined[0].comparisons.len(), 2); // Never averages across stores.
-    for query in [
-        "my milk",
-        "ex mpl",
-        "breakfast",
-        "888",
-        "shop two",
-        "old product",
-        "",
-    ] {
-        assert_eq!(search(&joined, query).len(), 1, "{query}");
-    }
-    assert!(search(&joined, "unrelated").is_empty());
-    assert_eq!(build_history(&rows, &[]).unwrap(), separate);
-}
-
-#[test]
-fn conflicting_aliases_fail_independent_of_product_order() {
-    let item = key("SHOP", "Milk", None);
-    let a = link(vec![item.clone()]);
-    let mut b = a.clone();
-    b.id = "other".into();
-    for products in [vec![a.clone(), b.clone()], vec![b, a.clone()]] {
-        assert_eq!(
-            build_history(&[], &products),
-            Err(HistoryError::ConflictingAlias(item.clone()))
-        );
-    }
-    assert_eq!(
-        build_history(&[], &[a.clone(), a]),
-        Err(HistoryError::DuplicateProductId("milk".into()))
-    );
-}
-
-#[test]
-fn linking_product_identity_does_not_approve_prices() {
-    let a = observation("r1", "line", 349);
-    let mut b = observation("r2", "line", 698);
-    b.item = key("Shop Two", "Different printed name", Some("999"));
-    let product = link(vec![a.item.clone(), b.item.clone()]);
-    let groups = build_history(&[a.clone(), b.clone()], std::slice::from_ref(&product)).unwrap();
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].entries.len(), 2);
-    assert!(groups[0].comparisons.is_empty());
-
-    // Approval is per observation. A reviewed alias does not approve the other
-    // store's potentially multi-unit or mispaired amount.
-    approve(&mut b, 2);
-    let groups = build_history(&[a, b], &[product]).unwrap();
-    assert_eq!(groups[0].comparisons.len(), 1);
-    assert_eq!(groups[0].comparisons[0].key.merchant, "SHOP TWO");
-    assert_eq!(fraction(groups[0].comparisons[0].average), (349, 1));
-    assert_eq!(groups[0].comparisons[0].points.len(), 1);
-}
-
-#[test]
-fn repeated_alias_within_one_product_is_harmless_and_canonicalized() {
-    let a = observation("r", "i", 100);
-    let product = link(vec![a.item.clone(), a.item.clone()]);
-    let groups = build_history(&[a], &[product]).unwrap();
-    assert_eq!(groups[0].aliases.len(), 1);
-}
-
-#[test]
-fn recorded_quantity_one_does_not_turn_a_line_amount_into_a_unit_price() {
-    let mut single = observation("r1", "i", 349);
-    let mut double = observation("r2", "i", 698);
-    double.date = Some(PurchaseDate::new(2026, 2, 1).unwrap());
-    // Both parser outputs say one. Neither supports a claimed price doubling.
-    let groups = build_history(&[single.clone(), double.clone()], &[]).unwrap();
-    assert!(groups[0].comparisons.is_empty());
-    assert!(groups[0]
-        .entries
+/// One receipt per price, a day apart, each buying one line of `description`.
+fn buys(merchant: &str, description: &str, prices: &[&str]) -> Vec<HistoryReceipt> {
+    prices
         .iter()
-        .all(|e| e.comparison_issues == [ComparisonIssue::Unapproved]));
-    assert_eq!(groups[0].entries[1].observation.amount_minor, Some(698));
-    approve(&mut single, 1);
-    approve(&mut double, 2);
-    let groups = build_history(&[single, double], &[]).unwrap();
-    let series = &groups[0].comparisons[0];
-    assert_eq!(fraction(series.minimum), (349, 1));
-    assert_eq!(series.minimum, series.maximum);
-    assert_eq!(fraction(series.average), (349, 1));
-    assert_eq!(series.latest[0].units, 2);
-    assert_eq!(groups[0].entries[1].observation.recorded_quantity, Some(1));
+        .enumerate()
+        .map(|(i, price)| {
+            receipt(
+                &format!("{merchant}-{i}"),
+                merchant,
+                &format!("2026-01-{:02}", i + 1),
+                vec![item(description, price)],
+            )
+        })
+        .collect()
 }
 
-#[test]
-fn unknown_fields_and_nonproducts_survive_with_explicit_comparison_issues() {
-    let mut missing = observation("missing", "i", 100);
-    missing.date = None;
-    missing.currency = None;
-    missing.amount_minor = None;
-    let mut rows = vec![missing];
-    for (index, kind) in [
-        LineKind::Discount,
-        LineKind::Deposit,
-        LineKind::Return,
-        LineKind::GiftCard,
-        LineKind::Other,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut row = observation(&index.to_string(), "i", -100);
-        row.kind = kind;
-        approve(&mut row, 1);
-        rows.push(row);
+fn name_key(merchant: &str, name: &str) -> ItemKey {
+    ItemKey {
+        merchant: merchant.into(),
+        identity: Identity::Name(name.into()),
     }
-    let mut negative = observation("negative-product", "i", -100);
-    approve(&mut negative, 1);
-    rows.push(negative);
-    let groups = build_history(&rows, &[]).unwrap();
-    assert_eq!(groups[0].entries.len(), 7);
-    assert!(groups[0].comparisons.is_empty());
-    let issues = &groups[0].entries.last().unwrap().comparison_issues;
-    assert_eq!(
-        issues,
-        &[
-            ComparisonIssue::UnknownDate,
-            ComparisonIssue::UnknownCurrency,
-            ComparisonIssue::UnreadableAmount,
-            ComparisonIssue::Unapproved
-        ]
-    );
-    assert!(groups[0].entries[0]
-        .comparison_issues
-        .contains(&ComparisonIssue::NotProduct));
 }
 
-#[test]
-fn generic_labels_remain_purchase_lists_without_approval() {
-    let mut a = observation("r1", "i", 200);
-    a.item = key("Shop", "MEAT", None);
-    let mut b = a.clone();
-    b.id.receipt_id = "r2".into();
-    b.amount_minor = Some(2000);
-    let groups = build_history(&[a, b], &[]).unwrap();
-    assert_eq!(groups[0].entries.len(), 2);
-    assert!(groups[0].comparisons.is_empty());
-}
-
-#[test]
-fn currencies_and_price_bases_form_separate_series() {
-    let mut rows = Vec::new();
-    for currency in [" cad ", "USD"] {
-        for tax in [TaxBasis::Included, TaxBasis::Excluded] {
-            for discounts in [
-                DiscountBasis::BeforeDiscounts,
-                DiscountBasis::AfterDiscounts,
-            ] {
-                let mut row = observation(&rows.len().to_string(), "i", 100);
-                row.currency = Some(currency.into());
-                row.comparison = Some(ComparisonApproval {
-                    units: 1,
-                    tax,
-                    discounts,
-                });
-                rows.push(row);
-            }
-        }
+fn code_key(merchant: &str, code: &str) -> ItemKey {
+    ItemKey {
+        merchant: merchant.into(),
+        identity: Identity::Code(code.into()),
     }
-    let groups = build_history(&rows, &[]).unwrap();
-    assert_eq!(groups[0].comparisons.len(), 8);
-    assert!(groups[0].comparisons.iter().all(|s| s.points.len() == 1));
-    assert_eq!(groups[0].comparisons[0].key.currency, "CAD");
+}
+
+fn only(histories: &[ItemHistory]) -> &ItemHistory {
+    assert_eq!(histories.len(), 1, "{histories:#?}");
+    &histories[0]
+}
+
+fn day(y: i32, m: u32, d: u32) -> SpendDate {
+    SpendDate::new(y, m, d)
+}
+
+// ---------------------------------------------------------------------------
+// What is one item
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_printed_code_is_the_identity_and_the_name_only_a_label() {
+    let receipts = vec![
+        receipt(
+            "a",
+            "Warehouse",
+            "2026-01-01",
+            vec![coded("4521", "4521 2% MILK-FILT", "5.29")],
+        ),
+        receipt(
+            "b",
+            "Warehouse",
+            "2026-01-08",
+            vec![coded("4521", "4521 2% MILK/FILT", "5.29")],
+        ),
+        receipt(
+            "c",
+            "Warehouse",
+            "2026-01-15",
+            vec![coded("4521", "2% MILK FILT", "5.29")],
+        ),
+    ];
+    let history = price_history(&receipts, &[]);
+    let milk = only(&history);
+    assert_eq!(milk.key, HistoryKey::Item(code_key("WAREHOUSE", "4521")));
+    assert_eq!(milk.purchases.len(), 3);
+    // The code is stripped from the label; every spelling appears once, so the
+    // latest wins the title.
+    assert_eq!(milk.name, "2% MILK FILT");
 }
 
 #[test]
-fn statistics_are_exact_and_average_is_weighted_by_confirmed_units() {
-    let mut a = observation("a", "i", 600);
-    let mut b = observation("b", "i", 100);
-    approve(&mut a, 2);
-    approve(&mut b, 1);
-    let groups = build_history(&[a, b], &[]).unwrap();
-    let series = &groups[0].comparisons[0];
-    assert_eq!(fraction(series.minimum), (100, 1));
-    assert_eq!(fraction(series.maximum), (300, 1));
-    assert_eq!(fraction(series.average), (700, 3));
-    let mut tiny = observation("c", "i", 1);
-    approve(&mut tiny, 3);
-    let groups = build_history(&[tiny], &[]).unwrap();
-    assert_eq!(fraction(groups[0].comparisons[0].average), (1, 3));
+fn a_line_missing_its_code_joins_the_one_code_printed_with_that_name() {
+    let receipts = vec![
+        receipt(
+            "a",
+            "Warehouse",
+            "2026-01-01",
+            vec![coded("812", "812 LG EGGS", "6.49")],
+        ),
+        receipt(
+            "b",
+            "Warehouse",
+            "2026-01-08",
+            vec![item("LG EGGS", "6.49")],
+        ),
+    ];
+    let eggs = only(&price_history(&receipts, &[])).clone();
+    assert_eq!(eggs.key, HistoryKey::Item(code_key("WAREHOUSE", "812")));
+    assert_eq!(eggs.members, vec![code_key("WAREHOUSE", "812")]);
 }
 
 #[test]
-fn free_items_are_zero_not_unreadable_and_large_prices_do_not_lose_precision() {
-    let mut free = observation("free", "i", 0);
-    let mut high = observation("high", "i", i64::MAX);
-    let mut lower = observation("lower", "i", i64::MAX - 1);
-    approve(&mut free, 3);
-    approve(&mut high, 1);
-    approve(&mut lower, 1);
-    let groups = build_history(&[free, high, lower], &[]).unwrap();
-    let series = &groups[0].comparisons[0];
-    assert_eq!(fraction(series.minimum), (0, 1));
-    assert_eq!(fraction(series.maximum), (i64::MAX as u64, 1));
-    assert!(series.points[1].unit_price > series.points[2].unit_price);
-    assert_eq!(fraction(series.average), ((i64::MAX as u64) * 2 - 1, 5));
-}
-
-#[test]
-fn aggregate_overflow_is_an_error_instead_of_wrapping_or_saturating() {
-    let mut rows = Vec::new();
-    for id in ["a", "b", "c"] {
-        let mut row = observation(id, "i", i64::MAX);
-        approve(&mut row, 1);
-        rows.push(row);
-    }
-    assert_eq!(
-        build_history(&rows, &[]),
-        Err(HistoryError::ArithmeticOverflow)
-    );
-}
-
-#[test]
-fn latest_preserves_same_day_ties_and_unknown_dates_never_win() {
-    let mut a = observation("a", "i", 100);
-    let mut b = observation("b", "i", 200);
-    let mut c = observation("c", "i", 300);
-    let mut undated = observation("z", "i", 9999);
-    a.date = Some(PurchaseDate::new(2025, 12, 31).unwrap());
-    undated.date = None;
-    for row in [&mut a, &mut b, &mut c, &mut undated] {
-        approve(row, 1);
-    }
-    let groups = build_history(&[undated, c, a, b], &[]).unwrap();
-    let group = &groups[0];
-    let ids: Vec<_> = group
-        .entries
+fn a_name_printed_with_two_codes_is_ambiguous_and_stays_by_name() {
+    let receipts = vec![
+        receipt(
+            "a",
+            "Warehouse",
+            "2026-01-01",
+            vec![coded("1", "1 MILK", "5.00")],
+        ),
+        receipt(
+            "b",
+            "Warehouse",
+            "2026-01-02",
+            vec![coded("2", "2 MILK", "9.00")],
+        ),
+        receipt("c", "Warehouse", "2026-01-03", vec![item("MILK", "5.00")]),
+    ];
+    let history = price_history(&receipts, &[]);
+    assert_eq!(history.len(), 3);
+    assert!(history
         .iter()
-        .map(|e| e.observation.id.receipt_id.as_str())
+        .any(|h| h.key == HistoryKey::Item(name_key("WAREHOUSE", "MILK"))));
+}
+
+#[test]
+fn codes_never_join_across_merchants() {
+    let receipts = vec![
+        receipt(
+            "a",
+            "Shop One",
+            "2026-01-01",
+            vec![coded("0627", "0627 YOGURT", "3.19")],
+        ),
+        receipt(
+            "b",
+            "Shop Two",
+            "2026-01-02",
+            vec![coded("0627", "0627 YOGURT", "2.99")],
+        ),
+    ];
+    assert_eq!(price_history(&receipts, &[]).len(), 2);
+}
+
+#[test]
+fn deal_text_markers_case_and_spacing_do_not_split_an_item() {
+    let receipts = vec![
+        receipt(
+            "a",
+            "Corner Mart",
+            "2026-01-01",
+            vec![item("Rice Crackers ((300g)@3.49(1/$1.89))", "1.89")],
+        ),
+        receipt(
+            "b",
+            "corner  mart",
+            "2026-01-02",
+            vec![item("*rice crackers ((## 300g)@3.49(2/$4.00))", "2.00")],
+        ),
+        receipt(
+            "c",
+            "CORNER MART",
+            "2026-01-03",
+            vec![item("RICE   CRACKERS", "3.49")],
+        ),
+    ];
+    let eggs = only(&price_history(&receipts, &[])).clone();
+    assert_eq!(
+        eggs.key,
+        HistoryKey::Item(name_key("CORNER MART", "RICE CRACKERS"))
+    );
+    assert_eq!(eggs.purchases.len(), 3);
+    // Purchases keep what was printed; only the key is cleaned.
+    assert_eq!(
+        eggs.purchases[1].description,
+        "*rice crackers ((## 300g)@3.49(2/$4.00))"
+    );
+}
+
+#[test]
+fn clean_name_takes_off_deal_text_and_keeps_printed_brackets() {
+    assert_eq!(
+        clean_name("AB - Rice Crackers ((300g)@3.49(1/$1.89))", None),
+        "AB - Rice Crackers"
+    );
+    assert_eq!(clean_name("HOUSE RED (3 @ 12.50)", None), "HOUSE RED");
+    assert_eq!(
+        clean_name("Soup Base 100gx4) @5.49 (1/$3.99)", None),
+        "Soup Base 100gx4)"
+    );
+    assert_eq!(clean_name("812 LG EGGS", Some("812")), "LG EGGS");
+    // A name that merely starts with the code's digits is not a code prefix.
+    assert_eq!(clean_name("8121 THING", Some("812")), "8121 THING");
+    assert_eq!(clean_name("*Bok Choy (Small)", None), "Bok Choy (Small)");
+    // All annotation: returned whole rather than empty.
+    assert_eq!(clean_name("@ 2.00", None), "@ 2.00");
+}
+
+#[test]
+fn a_recognised_family_keys_the_merchant_however_the_header_read() {
+    let mut a = receipt("a", "WHOLESALE", "2026-01-01", vec![item("BREAD", "4.00")]);
+    a.merchant_family = Some("Warehouse".into());
+    let b = receipt("b", "Warehouse", "2026-01-02", vec![item("BREAD", "4.00")]);
+    let mut c = receipt("c", "Warehouse", "2026-01-03", vec![item("BREAD", "4.00")]);
+    c.merchant_family = Some("  ".into()); // blank is no family
+    let bread = only(&price_history(&[a, b, c], &[])).clone();
+    assert_eq!(bread.purchases.len(), 3);
+    assert!(bread.purchases.iter().all(|p| p.merchant == "Warehouse"));
+}
+
+#[test]
+fn only_purchases_are_history() {
+    let mut deposit = item("DEPOSIT 1", "0.10");
+    deposit.tags = vec![ItemTag::new("deposit", "Deposit")];
+    let mut discount = item("TPD/812", "3.00"); // even unsigned
+    discount.tags = vec![ItemTag::new("discount", "Discount")];
+    let mut gift = item("GIFT CARD", "25.00");
+    gift.is_gift_card = true;
+    let receipts = vec![receipt(
+        "a",
+        "Shop",
+        "2026-01-01",
+        vec![
+            deposit,
+            discount,
+            gift,
+            item("RETURNED KETTLE", "-30.00"),
+            item("BANNER", "0.00"),
+            item("SMUDGED", "N/A"),
+            item("TEA", "4.00"),
+        ],
+    )];
+    let history = price_history(&receipts, &[]);
+    let mut names: Vec<&str> = history.iter().map(|h| h.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["SMUDGED", "TEA"]);
+    let smudged = history.iter().find(|h| h.name == "SMUDGED").unwrap();
+    assert_eq!(smudged.purchases[0].amount, None);
+    assert_eq!(smudged.purchases[0].item_index, 5);
+    assert_eq!(smudged.latest, None);
+    assert_eq!(smudged.merchants[0].pricing, Pricing::Single);
+    assert_eq!(smudged.merchants[0].average, None);
+}
+
+// ---------------------------------------------------------------------------
+// How many units an amount paid for
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_multiple_of_another_price_is_a_multi_buy_not_a_price_rise() {
+    let receipts = buys("Shop", "EGGS", &["6.49", "6.49", "12.98", "6.49"]);
+    let eggs = only(&price_history(&receipts, &[])).clone();
+    let double = eggs
+        .purchases
+        .iter()
+        .find(|p| p.amount == Some(1298))
+        .unwrap();
+    assert_eq!((double.units, double.basis), (2, UnitsBasis::Inferred));
+    assert_eq!(double.unit_price, Some(649));
+    let prices = &eggs.merchants[0];
+    assert_eq!(prices.pricing, Pricing::Steady);
+    assert_eq!(
+        (prices.lowest, prices.highest, prices.typical),
+        (Some(649), Some(649), Some(649))
+    );
+    assert_eq!(prices.average, Some(649));
+}
+
+#[test]
+fn the_smallest_dividing_price_sets_the_count() {
+    // 45.96 beside 11.49 and 22.98 is four of the first, not two of the second.
+    let receipts = buys(
+        "Shop",
+        "PRAWNS",
+        &["11.49", "22.98", "34.47", "45.96", "11.49"],
+    );
+    let prawns = only(&price_history(&receipts, &[])).clone();
+    let units: Vec<u32> = prawns.purchases.iter().rev().map(|p| p.units).collect();
+    assert_eq!(units, [1, 2, 3, 4, 1]);
+    assert!(prawns.purchases.iter().all(|p| p.unit_price == Some(1149)));
+}
+
+#[test]
+fn a_divisible_amount_among_prices_that_never_repeat_is_left_alone() {
+    // By-weight amounts: 8.00 happens to be 2 × 4.00, but nothing else repeats,
+    // so it is not evidence of a multi-buy.
+    let receipts = buys(
+        "Butcher",
+        "MEAT",
+        &["4.00", "13.27", "8.00", "6.51", "17.03"],
+    );
+    let meat = only(&price_history(&receipts, &[])).clone();
+    assert!(meat
+        .purchases
+        .iter()
+        .all(|p| p.basis == UnitsBasis::Assumed && p.units == 1));
+    let prices = &meat.merchants[0];
+    assert_eq!(prices.pricing, Pricing::Varies);
+    assert_eq!((prices.lowest, prices.highest), (Some(400), Some(1703)));
+}
+
+#[test]
+fn a_recorded_quantity_counts_and_seeds_inference() {
+    let mut six = item("BUNS", "9.54");
+    six.quantity = 6;
+    let receipts = vec![
+        receipt("a", "Bakery", "2026-01-01", vec![six]),
+        receipt("b", "Bakery", "2026-01-02", vec![item("BUNS", "9.54")]),
+    ];
+    let buns = only(&price_history(&receipts, &[])).clone();
+    let recorded = buns.purchases.iter().find(|p| p.receipt_id == "a").unwrap();
+    assert_eq!((recorded.units, recorded.basis), (6, UnitsBasis::Recorded));
+    let inferred = buns.purchases.iter().find(|p| p.receipt_id == "b").unwrap();
+    assert_eq!((inferred.units, inferred.basis), (6, UnitsBasis::Inferred));
+    assert_eq!(buns.merchants[0].pricing, Pricing::Steady);
+    assert_eq!(buns.merchants[0].typical, Some(159));
+}
+
+#[test]
+fn a_negative_or_zero_quantity_is_one() {
+    let mut odd = item("TEA", "4.00");
+    odd.quantity = -2;
+    let mut zero = item("TEA", "4.00");
+    zero.quantity = 0;
+    let receipts = vec![receipt("a", "Shop", "2026-01-01", vec![odd, zero])];
+    let tea = only(&price_history(&receipts, &[])).clone();
+    assert!(tea
+        .purchases
+        .iter()
+        .all(|p| p.units == 1 && p.basis == UnitsBasis::Assumed));
+}
+
+#[test]
+fn units_are_inferred_within_a_merchant_only() {
+    let mut receipts = buys("Shop One", "COLA", &["2.00", "2.00"]);
+    receipts.extend(buys("Shop Two", "COLA", &["4.00"]));
+    let link = ProductLink {
+        id: "cola".into(),
+        name: "Cola".into(),
+        members: vec![name_key("Shop One", "COLA"), name_key("Shop Two", "COLA")],
+    };
+    let cola = only(&price_history(&receipts, &[link])).clone();
+    let two = cola
+        .purchases
+        .iter()
+        .find(|p| p.merchant == "Shop Two")
+        .unwrap();
+    assert_eq!((two.units, two.basis), (1, UnitsBasis::Assumed));
+}
+
+// ---------------------------------------------------------------------------
+// When a price is a price
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pricing_is_steady_when_at_least_half_the_prices_repeat() {
+    let pricing = |prices: &[&str]| {
+        only(&price_history(&buys("Shop", "X", prices), &[])).merchants[0].pricing
+    };
+    assert_eq!(pricing(&["5.00"]), Pricing::Single);
+    assert_eq!(pricing(&["5.00", "5.00"]), Pricing::Steady);
+    // A rise and a weighed item look the same until a price comes round again.
+    assert_eq!(pricing(&["4.85", "5.29"]), Pricing::Varies);
+    assert_eq!(pricing(&["4.85", "4.85", "5.29"]), Pricing::Steady);
+    assert_eq!(pricing(&["4.85", "4.85", "5.29", "7.10"]), Pricing::Steady);
+    assert_eq!(
+        pricing(&["4.85", "4.85", "5.29", "7.10", "7.45"]),
+        Pricing::Varies
+    );
+}
+
+#[test]
+fn typical_is_the_most_common_price_and_the_latest_breaks_a_tie() {
+    let receipts = buys("Shop", "MILK", &["4.85", "4.85", "5.29", "5.29"]);
+    let milk = only(&price_history(&receipts, &[])).clone();
+    assert_eq!(milk.merchants[0].typical, Some(529));
+    assert_eq!(milk.merchants[0].average, Some(507));
+}
+
+#[test]
+fn the_average_weighs_each_unit_and_rounds_half_up() {
+    let mut three = item("PEARS", "5.00");
+    three.quantity = 3;
+    let receipts = vec![
+        receipt("a", "Shop", "2026-01-01", vec![three]),
+        receipt("b", "Shop", "2026-01-02", vec![item("PEARS", "2.00")]),
+    ];
+    let pears = only(&price_history(&receipts, &[])).clone();
+    // 500 / 3 = 166.67 → 167.
+    assert_eq!(pears.purchases[1].unit_price, Some(167));
+    // 700 / 4 = 175.
+    assert_eq!(pears.merchants[0].average, Some(175));
+}
+
+// ---------------------------------------------------------------------------
+// Dates and order
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_purchase_date_is_never_invented() {
+    let mut placeholder = receipt("p", "Shop", "2026-01-01", vec![]);
+    placeholder.date_is_placeholder = true;
+    assert_eq!(purchase_date(&placeholder), None);
+    assert_eq!(
+        purchase_date(&receipt("x", "Shop", "2026-13-01", vec![])),
+        None
+    );
+    let mut missing = receipt("m", "Shop", "", vec![]);
+    missing.date_iso = None;
+    assert_eq!(purchase_date(&missing), None);
+    assert_eq!(
+        purchase_date(&receipt("ok", "Shop", "2026-02-28", vec![])),
+        Some(day(2026, 2, 28))
+    );
+}
+
+#[test]
+fn undated_purchases_sort_last_count_in_figures_and_are_never_latest() {
+    let mut undated = receipt("u", "Shop", "", vec![item("TEA", "1.00")]);
+    undated.date_iso = None;
+    let receipts = vec![
+        undated,
+        receipt("old", "Shop", "2026-01-01", vec![item("TEA", "4.00")]),
+        receipt("new", "Shop", "2026-02-01", vec![item("TEA", "4.00")]),
+    ];
+    let tea = only(&price_history(&receipts, &[])).clone();
+    let ids: Vec<&str> = tea
+        .purchases
+        .iter()
+        .map(|p| p.receipt_id.as_str())
         .collect();
-    assert_eq!(ids, ["a", "b", "c", "z"]);
-    assert_eq!(group.comparisons[0].latest.len(), 2);
-    assert_eq!(fraction(group.comparisons[0].maximum), (300, 1));
+    assert_eq!(ids, ["new", "old", "u"]);
+    assert_eq!(tea.latest.as_ref().unwrap().receipt_id, "new");
+    assert_eq!(tea.merchants[0].lowest, Some(100));
 }
 
 #[test]
-fn input_order_does_not_change_history_and_rebuilding_applies_edits_and_deletions() {
-    let mut a = observation("a", "i", 100);
-    let mut b = observation("b", "i", 200);
-    approve(&mut a, 1);
-    approve(&mut b, 1);
-    assert_eq!(
-        build_history(&[a.clone(), b.clone()], &[]),
-        build_history(&[b.clone(), a.clone()], &[])
-    );
-    a.amount_minor = Some(300);
-    let groups = build_history(&[a], &[]).unwrap();
-    assert_eq!(groups[0].receipt_count, 1);
-    assert_eq!(fraction(groups[0].comparisons[0].minimum), (300, 1));
-    assert!(build_history(&[], &[]).unwrap().is_empty());
+fn latest_skips_an_unreadable_price() {
+    let receipts = vec![
+        receipt("old", "Shop", "2026-01-01", vec![item("TEA", "4.00")]),
+        receipt("new", "Shop", "2026-02-01", vec![item("TEA", "N/A")]),
+    ];
+    let tea = only(&price_history(&receipts, &[])).clone();
+    assert_eq!(tea.purchases[0].receipt_id, "new");
+    assert_eq!(tea.latest.unwrap().receipt_id, "old");
 }
 
 #[test]
-fn malformed_input_fails_before_producing_partial_histories() {
-    let mut row = observation("", "i", 100);
+fn repeated_lines_on_one_receipt_are_separate_purchases() {
+    let receipts = vec![receipt(
+        "a",
+        "Shop",
+        "2026-01-01",
+        vec![
+            item("MILK", "5.29"),
+            item("BREAD", "3.00"),
+            item("MILK", "5.29"),
+        ],
+    )];
+    let history = price_history(&receipts, &[]);
+    let milk = history.iter().find(|h| h.name == "MILK").unwrap();
+    let indexes: Vec<u32> = milk.purchases.iter().map(|p| p.item_index).collect();
+    assert_eq!(indexes, [0, 2]);
+    assert_eq!(milk.receipt_count, 1);
+}
+
+#[test]
+fn histories_are_most_recent_first_and_independent_of_input_order() {
+    let receipts = vec![
+        receipt("a", "Shop", "2026-01-01", vec![item("OLD", "1.00")]),
+        receipt("b", "Shop", "2026-03-01", vec![item("NEW", "1.00")]),
+        receipt(
+            "c",
+            "Shop",
+            "2026-02-01",
+            vec![item("MID", "1.00"), item("MID", "1.00")],
+        ),
+    ];
+    let forward = price_history(&receipts, &[]);
+    let names: Vec<&str> = forward.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(names, ["NEW", "MID", "OLD"]);
+    let mut reversed = receipts.clone();
+    reversed.reverse();
+    assert_eq!(price_history(&reversed, &[]), forward);
+}
+
+// ---------------------------------------------------------------------------
+// The user's links
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_link_joins_merchants_without_mixing_their_prices() {
+    let mut receipts = buys("Shop One", "YOGURT 750G", &["3.19", "3.19"]);
+    receipts.extend(buys("Shop Two", "NAT YOGURT", &["2.99"]));
+    let link = ProductLink {
+        id: "yogurt".into(),
+        name: "Plain yogurt".into(),
+        // As a reader typed it back: unfolded keys still match.
+        members: vec![
+            name_key("shop one", "yogurt  750g"),
+            name_key("SHOP TWO", "NAT YOGURT"),
+        ],
+    };
+    let yogurt = only(&price_history(&receipts, &[link])).clone();
+    assert_eq!(yogurt.key, HistoryKey::Product("yogurt".into()));
+    assert_eq!(yogurt.name, "Plain yogurt");
+    assert_eq!(yogurt.members.len(), 2);
+    assert_eq!(yogurt.merchants.len(), 2);
+    assert_eq!(yogurt.merchants[0].merchant, "Shop One");
+    assert_eq!(yogurt.merchants[1].typical, Some(299));
+    // Removing the link is the undo.
+    assert_eq!(price_history(&receipts, &[]).len(), 2);
+}
+
+#[test]
+fn a_single_member_link_renames_and_a_blank_name_falls_back() {
+    let receipts = buys("Shop", "ORG MILK 4L", &["6.00"]);
+    let mut link = ProductLink {
+        id: "milk".into(),
+        name: "Organic milk".into(),
+        members: vec![name_key("SHOP", "ORG MILK 4L")],
+    };
     assert_eq!(
-        build_history(&[row.clone()], &[]),
-        Err(HistoryError::EmptyObservationId)
+        only(&price_history(&receipts, &[link.clone()])).name,
+        "Organic milk"
     );
-    row.id.receipt_id = "r".into();
-    for currency in ["", "CA", "123", "C AD", "CÄD"] {
-        row.currency = Some(currency.into());
+    link.name = "   ".into();
+    assert_eq!(only(&price_history(&receipts, &[link])).name, "ORG MILK 4L");
+}
+
+#[test]
+fn a_key_claimed_twice_goes_to_the_smaller_id_whatever_the_order() {
+    let receipts = buys("Shop", "TEA", &["4.00"]);
+    let link = |id: &str| ProductLink {
+        id: id.into(),
+        name: id.into(),
+        members: vec![name_key("SHOP", "TEA")],
+    };
+    for links in [vec![link("b"), link("a")], vec![link("a"), link("b")]] {
         assert_eq!(
-            build_history(&[row.clone()], &[]),
-            Err(HistoryError::InvalidCurrency(row.id.clone()))
+            only(&price_history(&receipts, &links)).key,
+            HistoryKey::Product("a".into())
         );
     }
-    row.currency = Some("CAD".into());
-    approve(&mut row, 0);
-    assert_eq!(
-        build_history(&[row.clone()], &[]),
-        Err(HistoryError::ZeroApprovedUnits(row.id))
-    );
-    let invalid = link(vec![]);
-    assert_eq!(
-        build_history(&[], &[invalid]),
-        Err(HistoryError::InvalidProductLink("milk".into()))
-    );
 }
 
 #[test]
-fn calendar_dates_validate_centuries_and_month_lengths() {
-    for (year, month, day) in [
-        (0, 1, 1),
-        (10000, 1, 1),
-        (2026, 0, 1),
-        (2026, 13, 1),
-        (2026, 1, 0),
-        (2026, 4, 31),
-        (2026, 2, 29),
-        (1900, 2, 29),
-    ] {
-        assert_eq!(
-            PurchaseDate::new(year, month, day),
-            Err(HistoryError::InvalidDate)
-        );
+fn a_link_with_no_purchases_produces_nothing() {
+    let link = ProductLink {
+        id: "gone".into(),
+        name: "Gone".into(),
+        members: vec![name_key("SHOP", "NOTHING")],
+    };
+    assert!(price_history(&buys("Shop", "TEA", &["4.00"]), &[link])
+        .iter()
+        .all(|h| h.key != HistoryKey::Product("gone".into())));
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+#[test]
+fn search_reads_names_codes_merchants_and_printed_text() {
+    let receipts = vec![receipt(
+        "a",
+        "Warehouse",
+        "2026-01-01",
+        vec![coded("0812", "0812 LG EGGS (2/$9.00 @)", "6.49")],
+    )];
+    let eggs = only(&price_history(&receipts, &[])).clone();
+    for query in ["", "lg  eggs", "0812", "warehouse", "2/$9.00"] {
+        assert!(matches(&eggs, query), "{query}");
     }
-    let date = PurchaseDate::new(2000, 2, 29).unwrap();
-    assert_eq!(date.to_string(), "2000-02-29");
-    assert_eq!((date.year(), date.month(), date.day()), (2000, 2, 29));
-    assert!(PurchaseDate::new(2024, 2, 29).is_ok());
+    assert!(!matches(&eggs, "milk"));
 }

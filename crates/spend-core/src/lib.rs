@@ -57,7 +57,9 @@ use std::collections::HashMap;
 /// timezone, so it can't disagree with the platform that resolved the date in
 /// the first place. Turning an *instant* into one of these stays the caller's
 /// job, for the reasons in the crate docs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Orders chronologically: the fields are declared year, month, day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SpendDate {
     pub year: i32,
     pub month: u32,
@@ -409,7 +411,10 @@ fn capitalize_first(s: &str) -> String {
 /// Parse a strict ISO `YYYY-MM-DD`. Anything else — a wrong shape, a month of
 /// 13, a day of 0 — is `None` and falls back to the scan date, matching
 /// `LocalDate.parse` throwing and `DateFormatter` returning nil.
-fn parse_iso_date(s: &str) -> Option<SpendDate> {
+///
+/// Public so `price-history` reads a receipt date by the same rule rather than
+/// a second copy of it.
+pub fn parse_iso_date(s: &str) -> Option<SpendDate> {
     let b = s.as_bytes();
     if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
         return None;

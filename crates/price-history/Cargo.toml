@@ -9,6 +9,8 @@ publish = false
 [lints]
 workspace = true
 
-# Pure aggregation of observations supplied by the apps. No OCR, storage,
-# clock, network, floating point, or platform/binding dependencies.
+# Pure aggregation over receipts the apps supply. No OCR, storage, clock or
+# bindings; spend-core is here only for its price and date readings, so a
+# receipt is read by one rule wherever it is read.
 [dependencies]
+spend-core = { path = "../spend-core" }

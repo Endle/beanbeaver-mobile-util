@@ -2,9 +2,9 @@ name: CI
 
 # Three jobs, split by how much they cost.
 #
-# `crates` covers spend-core and price-history: zero dependencies, so it needs
-# no cache and finishes in seconds. Keeping it separate means a typo fails fast instead
-# of queueing behind an ONNX Runtime download.
+# `crates` covers spend-core and price-history: no dependencies outside this
+# workspace, so it needs no cache and finishes in seconds. Keeping it separate
+# means a typo fails fast instead of queueing behind an ONNX Runtime download.
 #
 # `ffi` builds bb-mobile-ffi, which pulls in bb-receipt-ffi and therefore
 # ocr-paddle and `ort`. It is the slow one, and it exists to assert the thing
