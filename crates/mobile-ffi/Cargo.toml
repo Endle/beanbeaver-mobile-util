@@ -27,6 +27,7 @@ path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 spend-core = { path = "../spend-core" }
+price-history = { path = "../price-history" }
 # Depended on so its scaffolding lands in this library — see the `use ... as _`
 # in lib.rs. Nothing here calls it. Keep this tag in step with what the apps
 # expect; a breaking FFI change here is a breaking change for both of them.

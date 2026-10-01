@@ -177,6 +177,7 @@ name = "bb-mobile-ffi"
 version = "0.1.0"
 dependencies = [
  "bb-receipt-ffi",
+ "price-history",
  "spend-core",
  "uniffi",
 ]
@@ -1240,6 +1241,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "price-history"
+version = "0.1.0"
+dependencies = [
+ "spend-core",
 ]
 
 [[package]]

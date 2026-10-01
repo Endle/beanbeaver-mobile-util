@@ -1,0 +1,16 @@
+[package]
+name = "price-history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Pure aggregation over receipts the apps supply. No OCR, storage, clock or
+# bindings; spend-core is here only for its price and date readings, so a
+# receipt is read by one rule wherever it is read.
+[dependencies]
+spend-core = { path = "../spend-core" }
